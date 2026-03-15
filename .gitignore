@@ -1,0 +1,21 @@
+node_modules/
+
+# Env/secrets
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Build/cache
+.next/
+.turbo/
+dist/
+coverage/
+
+# Logs / OS / editor
+*.log
+.DS_Store
+Thumbs.db
+.vscode/

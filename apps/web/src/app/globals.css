@@ -1,0 +1,69 @@
+@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Sora:wght@500;600;700;800&display=swap");
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --sv-bg: #0b1220;
+  --sv-bg-soft: #111b2e;
+  --sv-text: #e6edf7;
+  --sv-muted: #afbdd3;
+  --sv-accent: #38bdf8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 10% 0%, rgba(56, 189, 248, 0.18), transparent 45%),
+    radial-gradient(circle at 90% 100%, rgba(59, 130, 246, 0.14), transparent 45%),
+    var(--sv-bg);
+  color: var(--sv-text);
+  font-family: "Plus Jakarta Sans", "Segoe UI", sans-serif;
+  font-size: 18px;
+  line-height: 1.62;
+}
+
+h1,
+h2,
+h3,
+h4,
+.font-black,
+.font-bold {
+  font-family: "Sora", "Plus Jakarta Sans", "Segoe UI", sans-serif;
+}
+
+main {
+  font-size: 1rem;
+}
+
+.text-xs {
+  font-size: 0.96rem;
+  line-height: 1.45rem;
+}
+
+.text-sm {
+  font-size: 1.05rem;
+  line-height: 1.55rem;
+}
+
+.text-\[10px\] {
+  font-size: 0.9rem;
+  line-height: 1.35rem;
+}
+
+.text-\[11px\] {
+  font-size: 0.95rem;
+  line-height: 1.4rem;
+}
+
+.tracking-widest {
+  letter-spacing: 0.05em;
+}
+
+[class*="tracking-[0.3em]"],
+[class*="tracking-[0.35em]"] {
+  letter-spacing: 0.08em;
+}
