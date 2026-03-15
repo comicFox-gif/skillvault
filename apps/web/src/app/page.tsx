@@ -10,6 +10,7 @@ export default function VaultPage() {
   const { disconnect } = useDisconnect();
   const [walletMenuOpen, setWalletMenuOpen] = useState(false);
   const [showConnectPrompt, setShowConnectPrompt] = useState(false);
+  const [showWalletConnectPrompt, setShowWalletConnectPrompt] = useState(false);
   const walletMenuRef = useRef<HTMLDivElement | null>(null);
   const openConnectRef = useRef<(() => void) | null>(null);
   const systemOnline = Boolean(isConnected);
@@ -87,7 +88,7 @@ export default function VaultPage() {
                   return (
                     <button
                       type="button"
-                      onClick={openConnectModal}
+                      onClick={() => setShowWalletConnectPrompt(true)}
                       className="relative w-full overflow-hidden rounded-[3px] border border-sky-500/60 bg-transparent px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-sky-200 transition hover:bg-sky-500/10 sm:w-auto sm:tracking-[0.2em]"
                     >
                       <span className="relative flex items-center gap-2">
@@ -286,6 +287,43 @@ export default function VaultPage() {
                 }}
               >
                 Connect Wallet
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showWalletConnectPrompt && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4"
+          onClick={() => setShowWalletConnectPrompt(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-3xl border border-white/10 bg-slate-900/95 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="text-[11px] uppercase tracking-[0.35em] text-sky-400/80">Wallet Access</div>
+            <h3 className="mt-2 text-2xl font-semibold text-white">Connect wallet now?</h3>
+            <p className="mt-3 text-sm text-gray-400">
+              Continue to open your wallet connector and approve account access.
+            </p>
+            <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs font-bold uppercase tracking-wider text-white hover:bg-white/10"
+                onClick={() => setShowWalletConnectPrompt(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="rounded-2xl border border-sky-500/40 bg-sky-500/20 px-4 py-3 text-xs font-bold uppercase tracking-wider text-sky-100 hover:bg-sky-500/30"
+                onClick={() => {
+                  setShowWalletConnectPrompt(false);
+                  openConnectRef.current?.();
+                }}
+              >
+                Continue
               </button>
             </div>
           </div>
