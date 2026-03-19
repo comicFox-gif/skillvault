@@ -61,11 +61,67 @@ const escrowAbi = [
       { name: "proposedWinner", type: "address" },
     ],
   },
+  {
+    type: "function",
+    name: "matches",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "uint256" }],
+    outputs: [
+      { name: "creator", type: "address" },
+      { name: "opponent", type: "address" },
+      { name: "stake", type: "uint256" },
+      { name: "token", type: "address" },
+      { name: "createdAt", type: "uint64" },
+      { name: "joinedAt", type: "uint64" },
+      { name: "joinBy", type: "uint64" },
+      { name: "confirmBy", type: "uint64" },
+      { name: "status", type: "uint8" },
+      { name: "creatorPaid", type: "bool" },
+      { name: "opponentPaid", type: "bool" },
+      { name: "proposedWinner", type: "address" },
+    ],
+  },
 ] as const;
 
 const RECEIPT_WAIT_TIMEOUT_MS = 8_000;
 const RECEIPT_POLL_INTERVAL_MS = 2_000;
 const AUTO_RECHECK_MAX = 120;
+const RPC_CALL_TIMEOUT_MS = 6_000;
+const CREATE_LOOKBACK_MATCHES = 20n;
+const CREATE_TIME_TOLERANCE_SEC = 20 * 60;
+
+type MatchStorageData = readonly [
+  Address,
+  Address,
+  bigint,
+  Address,
+  bigint,
+  bigint,
+  bigint,
+  bigint,
+  bigint | number,
+  boolean,
+  boolean,
+  Address,
+];
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return await new Promise<T>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(new Error("Timed out while waiting for network response."));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timeoutId);
+        reject(error);
+      },
+    );
+  });
+}
 
 export default function CreateMatchPage() {
   const router = useRouter();
@@ -96,6 +152,8 @@ export default function CreateMatchPage() {
   const [createStatus, setCreateStatus] = useState<"idle" | "signing" | "pending">("idle");
   const [checkingReceipt, setCheckingReceipt] = useState(false);
   const [expectedMatchId, setExpectedMatchId] = useState<string | null>(null);
+  const [pendingStakeWei, setPendingStakeWei] = useState<bigint | null>(null);
+  const [pendingOpponent, setPendingOpponent] = useState<Address | null>(null);
   const [autoRechecks, setAutoRechecks] = useState(0);
   const [autoRematchRequested, setAutoRematchRequested] = useState(false);
   const openConnectRef = useRef<(() => void) | null>(null);
@@ -172,10 +230,10 @@ export default function CreateMatchPage() {
     if (autoRechecks >= AUTO_RECHECK_MAX) return;
     const timeoutId = window.setTimeout(() => {
       setAutoRechecks((count) => count + 1);
-      void resolveMatchId(txHash as `0x${string}`, expectedMatchId);
+      void resolveMatchId(txHash as `0x${string}`, expectedMatchId, pendingStakeWei, pendingOpponent);
     }, 6000);
     return () => window.clearTimeout(timeoutId);
-  }, [txHash, roomCode, checkingReceipt, expectedMatchId, autoRechecks]);
+  }, [txHash, roomCode, checkingReceipt, expectedMatchId, pendingStakeWei, pendingOpponent, autoRechecks]);
 
   useEffect(() => {
     if (!matchId || typeof window === "undefined") return;
@@ -227,6 +285,8 @@ export default function CreateMatchPage() {
     setError(null);
     setTxHash(null);
     setMatchId(null);
+    setPendingStakeWei(null);
+    setPendingOpponent(null);
     setAutoRechecks(0);
     setCreating(true);
     setCreateStatus("signing");
@@ -246,15 +306,20 @@ export default function CreateMatchPage() {
           `Escrow contract not found on this network (chainId=${chainId}) at ${escrowAddress}. Deploy escrow for this chain and update per-chain escrow env.`,
         );
       }
-      const nextId = await publicClient.readContract({
-        address: escrowAddress,
-        abi: escrowAbi,
-        functionName: "nextMatchId",
-        args: [],
-      });
+      const nextId = await withTimeout(
+        publicClient.readContract({
+          address: escrowAddress,
+          abi: escrowAbi,
+          functionName: "nextMatchId",
+          args: [],
+        }),
+        RPC_CALL_TIMEOUT_MS,
+      );
       const expectedId = typeof nextId === "bigint" ? nextId.toString() : null;
       setExpectedMatchId(expectedId);
       const stakeWei = parseEther(stakeEth || "0");
+      setPendingStakeWei(stakeWei);
+      setPendingOpponent(opponentAddress);
       const joinBySeconds = BigInt(Math.max(1, Number(joinMins || "30"))) * 60n;
       const confirmBySeconds = BigInt(Math.max(1, Number(timeframe || "10"))) * 60n;
       const feeOverrides: {
@@ -291,7 +356,7 @@ export default function CreateMatchPage() {
 
       setTxHash(hash);
       setCreateStatus("pending");
-      void resolveMatchId(hash, expectedId);
+      void resolveMatchId(hash, expectedId, stakeWei, opponentAddress);
     } catch (e: any) {
       const message = e?.shortMessage || e?.message || String(e);
       if (String(message).toLowerCase().includes("transaction already imported")) {
@@ -302,13 +367,20 @@ export default function CreateMatchPage() {
       } else {
         setError(message);
         setCreateStatus("idle");
+        setPendingStakeWei(null);
+        setPendingOpponent(null);
       }
     } finally {
       setCreating(false);
     }
   }
 
-  async function resolveMatchId(hash: `0x${string}`, expectedId: string | null) {
+  async function resolveMatchId(
+    hash: `0x${string}`,
+    expectedId: string | null,
+    stakeWei: bigint | null,
+    opponent: Address | null,
+  ) {
     if (!publicClient) {
       setError("Wallet client disconnected. Reconnect wallet, then click Check Again.");
       return;
@@ -320,7 +392,7 @@ export default function CreateMatchPage() {
       let latestHash = hash;
       let receipt: Awaited<ReturnType<typeof publicClient.getTransactionReceipt>> | null = null;
       try {
-        receipt = await publicClient.getTransactionReceipt({ hash });
+        receipt = await withTimeout(publicClient.getTransactionReceipt({ hash }), RPC_CALL_TIMEOUT_MS);
       } catch {
         // continue
       }
@@ -365,6 +437,14 @@ export default function CreateMatchPage() {
 
       if (!resolved && expectedId) resolved = await pollNextMatchId(expectedId);
       if (!resolved && expectedId && address) resolved = await pollMatchByCreator(expectedId, address);
+      if (!resolved && address && typeof stakeWei === "bigint" && opponent) {
+        const discovered = await findRecentCreatedMatchId(address, opponent, stakeWei, expectedId);
+        if (discovered) {
+          setMatchId(discovered);
+          setError(null);
+          resolved = true;
+        }
+      }
       if (!resolved) {
         setError("Transaction is still pending. Click Check Again in a few seconds.");
       }
@@ -401,12 +481,15 @@ export default function CreateMatchPage() {
     if (!publicClient || !escrowAddress) return false;
     const expected = BigInt(expectedId);
     try {
-      const nextId = await publicClient.readContract({
-        address: escrowAddress,
-        abi: escrowAbi,
-        functionName: "nextMatchId",
-        args: [],
-      });
+      const nextId = await withTimeout(
+        publicClient.readContract({
+          address: escrowAddress,
+          abi: escrowAbi,
+          functionName: "nextMatchId",
+          args: [],
+        }),
+        RPC_CALL_TIMEOUT_MS,
+      );
       if (typeof nextId === "bigint" && nextId > expected) {
         setMatchId(expectedId);
         setError(null);
@@ -423,12 +506,15 @@ export default function CreateMatchPage() {
     const expected = BigInt(expectedId);
     const creatorLower = creatorAddress.toLowerCase();
     try {
-      const row = (await publicClient.readContract({
-        address: escrowAddress,
-        abi: escrowAbi,
-        functionName: "getMatch",
-        args: [expected],
-      })) as readonly [Address, Address, bigint, bigint, bigint | number, boolean, boolean, Address];
+      const row = (await withTimeout(
+        publicClient.readContract({
+          address: escrowAddress,
+          abi: escrowAbi,
+          functionName: "getMatch",
+          args: [expected],
+        }),
+        RPC_CALL_TIMEOUT_MS,
+      )) as readonly [Address, Address, bigint, bigint, bigint | number, boolean, boolean, Address];
       const creator = row?.[0];
       if (creator && creator.toLowerCase() === creatorLower) {
         setMatchId(expectedId);
@@ -439,6 +525,80 @@ export default function CreateMatchPage() {
       // ignore transient RPC read errors; auto-check will retry
     }
     return false;
+  }
+
+  async function findRecentCreatedMatchId(
+    creatorAddress: Address,
+    opponentAddress: Address,
+    stakeAmount: bigint,
+    expectedId: string | null,
+  ): Promise<string | null> {
+    if (!publicClient || !escrowAddress) return null;
+    let nextId: bigint;
+    try {
+      const value = await withTimeout(
+        publicClient.readContract({
+          address: escrowAddress,
+          abi: escrowAbi,
+          functionName: "nextMatchId",
+          args: [],
+        }),
+        RPC_CALL_TIMEOUT_MS,
+      );
+      if (typeof value !== "bigint" || value === 0n) return null;
+      nextId = value;
+    } catch {
+      return null;
+    }
+
+    const creatorLower = creatorAddress.toLowerCase();
+    const opponentLower = opponentAddress.toLowerCase();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const minCreatedAt = Math.max(0, nowSec - CREATE_TIME_TOLERANCE_SEC);
+    const startId =
+      expectedId && /^\d+$/.test(expectedId)
+        ? BigInt(expectedId)
+        : (nextId > 0n ? nextId - 1n : 0n);
+    const stopByLookback = nextId > CREATE_LOOKBACK_MATCHES ? nextId - CREATE_LOOKBACK_MATCHES : 0n;
+    const stopId = stopByLookback < startId ? stopByLookback : startId;
+
+    let cursor = nextId > 0n ? nextId - 1n : 0n;
+    while (cursor >= stopId) {
+      try {
+        const row = (await withTimeout(
+          publicClient.readContract({
+            address: escrowAddress,
+            abi: escrowAbi,
+            functionName: "matches",
+            args: [cursor],
+          }),
+          RPC_CALL_TIMEOUT_MS,
+        )) as MatchStorageData;
+        const rowCreator = row?.[0]?.toLowerCase();
+        const rowOpponent = row?.[1]?.toLowerCase();
+        const rowStake = row?.[2];
+        const rowCreatedAt = row?.[4];
+        const createdAtSec =
+          typeof rowCreatedAt === "bigint"
+            ? Number(rowCreatedAt)
+            : typeof rowCreatedAt === "number"
+              ? rowCreatedAt
+              : 0;
+        if (
+          rowCreator === creatorLower &&
+          rowOpponent === opponentLower &&
+          rowStake === stakeAmount &&
+          createdAtSec >= minCreatedAt
+        ) {
+          return cursor.toString();
+        }
+      } catch {
+        // keep scanning
+      }
+      if (cursor === 0n) break;
+      cursor -= 1n;
+    }
+    return null;
   }
 
   return (
@@ -663,7 +823,14 @@ export default function CreateMatchPage() {
                     {txHash && (
                       <button
                         className="flex-1 rounded-2xl border border-sky-500/40 bg-sky-500/10 px-4 py-3 text-xs font-bold uppercase tracking-wider text-sky-200"
-                        onClick={() => void resolveMatchId(txHash as `0x${string}`, expectedMatchId)}
+                        onClick={() =>
+                          void resolveMatchId(
+                            txHash as `0x${string}`,
+                            expectedMatchId,
+                            pendingStakeWei,
+                            pendingOpponent,
+                          )
+                        }
                         disabled={checkingReceipt}
                       >
                         {checkingReceipt ? "Checking..." : "Check Again"}
@@ -675,6 +842,8 @@ export default function CreateMatchPage() {
                         setMatchId(null);
                         setTxHash(null);
                         setExpectedMatchId(null);
+                        setPendingStakeWei(null);
+                        setPendingOpponent(null);
                         setCreateStatus("idle");
                         setCheckingReceipt(false);
                       }}
