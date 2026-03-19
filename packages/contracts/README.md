@@ -1,6 +1,6 @@
 # Skill Vault Contracts
 
-Hardhat 3 workspace for `SkillVaultMatchEscrow` and helper contracts.
+Hardhat 3 workspace for `SkillVaultMatchEscrow`.
 
 ## Install
 
@@ -8,50 +8,61 @@ Hardhat 3 workspace for `SkillVaultMatchEscrow` and helper contracts.
 npm install
 ```
 
-## Local dev
+## Local Dev
 
 ```bash
 npx hardhat compile
 npx hardhat test
 ```
 
-## Polkadot ecosystem EVM deployment (Moonbase Alpha)
+## Deploy
 
-1. Copy `.env.example` to `.env` in this folder.
-2. Fill `MOONBASE_ALPHA_RPC_URL` and `MOONBASE_PRIVATE_KEY`.
-3. Deploy:
+### Polkadot Hub TestNet
+
+```bash
+npm run deploy:escrow:polkadot
+```
+
+Manual:
+
+```bash
+npx hardhat run --network polkadotHubTestnet scripts/deploy-match-escrow.ts
+```
+
+### Moonbase Alpha
 
 ```bash
 npm run deploy:escrow:moonbase
 ```
 
-You can also run manually:
+Manual:
 
 ```bash
 npx hardhat run --network moonbaseAlpha scripts/deploy-match-escrow.ts
 ```
 
-## Notes
+## Keeper
 
-- `MATCH_ESCROW_TREASURY` is optional and defaults to deployer.
-- `moonbeam` mainnet network is also configured in `hardhat.config.ts`.
+Set one of these in `.env` before running keeper:
+- `POLKADOT_MATCH_ESCROW_ADDRESS`
+- `MOONBASE_MATCH_ESCROW_ADDRESS`
+- or fallback `MATCH_ESCROW_ADDRESS`
 
-## Keeper bot (anti-stall settlement)
-
-Use the keeper to auto-finalize timed-out result proposals so players cannot stall payouts by refusing to respond.
-
-1. Set `MATCH_ESCROW_ADDRESS` in `.env`.
-2. Run one scan:
+Run once:
 
 ```bash
+npm run keeper:escrow:polkadot
 npm run keeper:escrow:moonbase
 ```
 
-3. Run continuously:
+Run watch mode:
 
 ```bash
+npm run keeper:escrow:polkadot:watch
 npm run keeper:escrow:moonbase:watch
 ```
 
-Optional:
-- `KEEPER_POLL_MS` controls watch interval (default `5000`).
+## Notes
+
+- `MATCH_ESCROW_TREASURY` is optional and defaults to deployer.
+- `KEEPER_POLL_MS` default is `5000`.

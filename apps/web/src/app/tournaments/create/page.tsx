@@ -55,7 +55,7 @@ export default function CreateTournamentPage() {
 
             <div>
               <label className="mb-2 block text-xs uppercase tracking-[0.3em] text-gray-500">Game</label>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {games.map((g) => (
                   <button
                     key={g}
@@ -126,7 +126,7 @@ export default function CreateTournamentPage() {
 
             <div className="rounded-2xl border border-white/10 bg-black/40 p-4 text-xs text-gray-300">
               <div className="text-[10px] uppercase tracking-[0.35em] text-gray-500 mb-3">Payout Table</div>
-              <div className="grid grid-cols-3 gap-3 text-center">
+              <div className="grid grid-cols-1 gap-3 text-center sm:grid-cols-3">
                 <div className="rounded-xl border border-white/10 bg-black/40 p-3">
                   <div className="text-[10px] uppercase tracking-widest text-gray-500">Pos 1</div>
                   <div className="mt-1 text-sky-300 font-semibold">{payout[0]}%</div>

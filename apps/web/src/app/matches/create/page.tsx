@@ -2,11 +2,18 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { useAccount, usePublicClient, useWriteContract } from "wagmi";
+import { useAccount, useChainId, usePublicClient, useWriteContract } from "wagmi";
 import { decodeEventLog, isAddress, parseEther, type Address } from "viem";
 import { encodeMatchCode } from "@/lib/matchCode";
+import {
+  getEscrowAddressForChain,
+  getExplorerUrlForChain,
+  getNativeSymbolForChain,
+  getSupportedChainNames,
+  isSupportedChainId,
+} from "@/lib/chains";
 
 const escrowAbi = [
   {
@@ -40,21 +47,22 @@ const escrowAbi = [
   },
 ] as const;
 
+const RECEIPT_WAIT_TIMEOUT_MS = 30_000;
+const NEXT_ID_POLL_TRIES = 6;
+const NEXT_ID_POLL_INTERVAL_MS = 1_000;
+const RECEIPT_POLL_INTERVAL_MS = 2_000;
+const AUTO_RECHECK_MAX = 10;
+
 export default function CreateMatchPage() {
   const router = useRouter();
   const { isConnected, address } = useAccount();
+  const chainId = useChainId();
   const publicClient = usePublicClient();
   const { writeContractAsync } = useWriteContract();
-  type BaseWriteConfig = Parameters<typeof writeContractAsync>[0];
-  type WriteConfig = Omit<BaseWriteConfig, "value" | "nonce"> & {
-    value?: bigint;
-    nonce?: number;
-  };
 
-  const escrowAddress = process.env.NEXT_PUBLIC_MATCH_ESCROW_ADDRESS as
-    | `0x${string}`
-    | undefined;
-  const nativeSymbol = process.env.NEXT_PUBLIC_NATIVE_SYMBOL || "DEV";
+  const escrowAddress = getEscrowAddressForChain(chainId);
+  const nativeSymbol = getNativeSymbolForChain(chainId);
+  const explorerBaseUrl = getExplorerUrlForChain(chainId).replace(/\/$/, "");
 
   const [stakeEth, setStakeEth] = useState("0.01");
   const [opponentAddress, setOpponentAddress] = useState<Address>(
@@ -74,29 +82,34 @@ export default function CreateMatchPage() {
   const [createStatus, setCreateStatus] = useState<"idle" | "signing" | "pending">("idle");
   const [checkingReceipt, setCheckingReceipt] = useState(false);
   const [expectedMatchId, setExpectedMatchId] = useState<string | null>(null);
-
-  async function writeWithNonce(config: WriteConfig) {
-    if (!publicClient || !address) {
-      return writeContractAsync(config as Parameters<typeof writeContractAsync>[0]);
-    }
-    const nonce = Number(await publicClient.getTransactionCount({ address, blockTag: "pending" }));
-    return writeContractAsync({ ...config, nonce } as Parameters<typeof writeContractAsync>[0]);
-  }
+  const [autoRechecks, setAutoRechecks] = useState(0);
+  const [autoRematchRequested, setAutoRematchRequested] = useState(false);
+  const openConnectRef = useRef<(() => void) | null>(null);
+  const autoRematchConnectPromptedRef = useRef(false);
+  const autoRematchTriggeredRef = useRef(false);
 
   const roomCode = useMemo(() => {
     if (!matchId) return null;
     return encodeMatchCode(matchId);
   }, [matchId]);
+  const expectedRoomCode = useMemo(() => {
+    if (!expectedMatchId) return null;
+    return encodeMatchCode(expectedMatchId);
+  }, [expectedMatchId]);
+  const txExplorerUrl = txHash ? `${explorerBaseUrl}/tx/${txHash}` : null;
 
   useEffect(() => {
     if (!roomCode) return;
     const timeParam = encodeURIComponent(timeframe);
-    const target = `/matches/${encodeURIComponent(roomCode)}?t=${timeParam}`;
+    const gameParam = encodeURIComponent(game);
+    const platformParam = encodeURIComponent(platform);
+    const joinParam = encodeURIComponent(joinMins);
+    const target = `/matches/${encodeURIComponent(roomCode)}?t=${timeParam}&g=${gameParam}&p=${platformParam}&j=${joinParam}`;
     const timeoutId = window.setTimeout(() => {
       router.push(target);
     }, 450);
     return () => window.clearTimeout(timeoutId);
-  }, [roomCode, timeframe, router]);
+  }, [roomCode, timeframe, game, platform, joinMins, router]);
 
   useEffect(() => {
     if (prefillApplied) return;
@@ -106,10 +119,24 @@ export default function CreateMatchPage() {
     const stakeParam = params.get("stake");
     const timeframeParam = params.get("timeframe");
     const opponentParam = params.get("opponent");
+    const joinParam = params.get("joinMins");
+    const gameParam = params.get("game");
+    const platformParam = params.get("platform");
+    const autoRematchParam = params.get("autorematch");
 
     if (stakeParam) setStakeEth(stakeParam);
     if (timeframeParam && /^\d+$/.test(timeframeParam)) setTimeframe(timeframeParam);
     if (opponentParam && isAddress(opponentParam)) setOpponentAddress(opponentParam);
+    if (joinParam && /^\d+$/.test(joinParam)) setJoinMins(joinParam);
+    if (gameParam === "eFootball" || gameParam === "FC26" || gameParam === "FC25" || gameParam === "Mortal Kombat") {
+      setGame(gameParam);
+    }
+    if (platformParam === "Console" || platformParam === "PC" || platformParam === "Mobile") {
+      setPlatform(platformParam);
+    }
+    if (autoRematchParam === "1") {
+      setAutoRematchRequested(true);
+    }
 
     setPrefillApplied(true);
   }, [prefillApplied]);
@@ -119,32 +146,78 @@ export default function CreateMatchPage() {
   }, [timeframe]);
 
   useEffect(() => {
+    if (!txHash || roomCode || checkingReceipt || autoRechecks >= AUTO_RECHECK_MAX) return;
+    const timeoutId = window.setTimeout(() => {
+      setAutoRechecks((count) => count + 1);
+      void resolveMatchId(txHash as `0x${string}`, expectedMatchId);
+    }, 6000);
+    return () => window.clearTimeout(timeoutId);
+  }, [txHash, roomCode, checkingReceipt, expectedMatchId, autoRechecks]);
+
+  useEffect(() => {
     if (!matchId || typeof window === "undefined") return;
     const meta = {
       game,
       platform,
       timeframe: Number(timeframe),
+      joinMins: Number(joinMins),
       createdAt: Date.now(),
     };
     window.localStorage.setItem(`match-meta:${matchId}`, JSON.stringify(meta));
-  }, [matchId, game, platform, timeframe]);
+  }, [matchId, game, platform, timeframe, joinMins]);
 
-  async function onCreate() {
-    if (creating) return;
-    setError(null);
-    setTxHash(null);
-    setMatchId(null);
-    setCreating(true);
-    setCreateStatus("signing");
+  useEffect(() => {
+    if (!prefillApplied || !autoRematchRequested) return;
+    if (roomCode || txHash || creating || createStatus !== "idle") return;
 
-    if (!escrowAddress) {
-      setError("Missing NEXT_PUBLIC_MATCH_ESCROW_ADDRESS in .env.local");
+    if (!isConnected) {
+      if (!autoRematchConnectPromptedRef.current) {
+        autoRematchConnectPromptedRef.current = true;
+        openConnectRef.current?.();
+      }
       return;
     }
 
+    if (autoRematchTriggeredRef.current) return;
+    autoRematchTriggeredRef.current = true;
+    void onCreate();
+  }, [prefillApplied, autoRematchRequested, roomCode, txHash, creating, createStatus, isConnected]);
+
+  async function onCreate() {
+    if (creating) return;
+    if (!isSupportedChainId(chainId)) {
+      setError(`Unsupported network. Switch wallet to one of: ${getSupportedChainNames()}.`);
+      return;
+    }
+    if (!escrowAddress) {
+      setError("Escrow address is missing for this network. Configure per-chain escrow env variables.");
+      return;
+    }
+    if (!publicClient || !address) {
+      setError("Wallet client not ready. Please reconnect wallet and try again.");
+      return;
+    }
+    setError(null);
+    setTxHash(null);
+    setMatchId(null);
+    setAutoRechecks(0);
+    setCreating(true);
+    setCreateStatus("signing");
+
     try {
-      if (!publicClient) {
-        throw new Error("Wallet client not ready. Please refresh and try again.");
+      const [latestNonce, pendingNonce] = await Promise.all([
+        publicClient.getTransactionCount({ address, blockTag: "latest" }),
+        publicClient.getTransactionCount({ address, blockTag: "pending" }),
+      ]);
+      if (pendingNonce > latestNonce) {
+        throw new Error("You have a pending wallet transaction. In MetaMask, Speed Up or Cancel it first.");
+      }
+
+      const bytecode = await publicClient.getBytecode({ address: escrowAddress });
+      if (!bytecode || bytecode === "0x") {
+        throw new Error(
+          `Escrow contract not found on this network (chainId=${chainId}) at ${escrowAddress}. Deploy escrow for this chain and update per-chain escrow env.`,
+        );
       }
       const nextId = await publicClient.readContract({
         address: escrowAddress,
@@ -157,13 +230,37 @@ export default function CreateMatchPage() {
       const stakeWei = parseEther(stakeEth || "0");
       const joinBySeconds = BigInt(Math.max(1, Number(joinMins || "30"))) * 60n;
       const confirmBySeconds = BigInt(Math.max(1, Number(timeframe || "10"))) * 60n;
-      const hash = await writeWithNonce({
+      const feeOverrides: {
+        gasPrice?: bigint;
+        maxFeePerGas?: bigint;
+        maxPriorityFeePerGas?: bigint;
+      } = {};
+      try {
+        const estimated = await publicClient.estimateFeesPerGas();
+        if (estimated.maxFeePerGas && estimated.maxPriorityFeePerGas) {
+          feeOverrides.maxFeePerGas = estimated.maxFeePerGas * 2n;
+          feeOverrides.maxPriorityFeePerGas = estimated.maxPriorityFeePerGas * 2n;
+        } else if (estimated.gasPrice) {
+          feeOverrides.gasPrice = estimated.gasPrice * 2n;
+        }
+      } catch {
+        // fallback to wallet defaults if fee estimation is unavailable
+      }
+      const request: any = {
         address: escrowAddress,
         abi: escrowAbi,
         functionName: "createMatch",
         args: [opponentAddress, stakeWei, joinBySeconds, confirmBySeconds] as const,
         value: stakeWei,
-      });
+      };
+      if (feeOverrides.maxFeePerGas && feeOverrides.maxPriorityFeePerGas) {
+        request.maxFeePerGas = feeOverrides.maxFeePerGas;
+        request.maxPriorityFeePerGas = feeOverrides.maxPriorityFeePerGas;
+      } else if (feeOverrides.gasPrice) {
+        request.gasPrice = feeOverrides.gasPrice;
+      }
+
+      const hash = await writeContractAsync(request);
 
       setTxHash(hash);
       setCreateStatus("pending");
@@ -179,42 +276,78 @@ export default function CreateMatchPage() {
 
   async function resolveMatchId(hash: `0x${string}`, expectedId: string | null) {
     if (!publicClient) return;
+    if (checkingReceipt) return;
     setCheckingReceipt(true);
+    let resolved = false;
     try {
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      const escrowAddrLower = escrowAddress?.toLowerCase();
-      if (!escrowAddrLower) return;
-      for (const log of receipt.logs) {
-        if (log.address.toLowerCase() !== escrowAddrLower) continue;
+      const startedAt = Date.now();
+      let receipt: Awaited<ReturnType<typeof publicClient.getTransactionReceipt>> | null = null;
+      while (Date.now() - startedAt < RECEIPT_WAIT_TIMEOUT_MS) {
         try {
-          const decoded = decodeEventLog({
-            abi: escrowAbi,
-            data: log.data,
-            topics: log.topics,
-          });
-          if (decoded.eventName === "MatchCreated") {
-            const id = decoded.args.matchId;
-            if (typeof id === "bigint") {
-              setMatchId(id.toString());
-              break;
-            }
-          }
+          receipt = await publicClient.getTransactionReceipt({ hash });
+          break;
         } catch {
-          // ignore non-matching logs
+          // keep polling until timeout
+        }
+        await new Promise((resolve) => setTimeout(resolve, RECEIPT_POLL_INTERVAL_MS));
+      }
+
+      if (receipt) {
+        if (receipt.status === "reverted") {
+          setError("Transaction reverted on-chain. Check stake amount and retry.");
+          return;
+        }
+        const matchedId = extractMatchIdFromReceipt(receipt);
+        if (matchedId) {
+          setMatchId(matchedId);
+          resolved = true;
+        } else if (expectedId) {
+          // Receipt is confirmed but event parsing can fail on some RPC/indexers.
+          // Use the pre-read nextMatchId snapshot as deterministic fallback.
+          setMatchId(expectedId);
+          resolved = true;
         }
       }
-      if (!matchId && expectedId) {
-        await pollNextMatchId(expectedId);
+
+      if (!resolved && expectedId) {
+        resolved = await pollNextMatchId(expectedId);
+      }
+      if (!resolved) {
+        setError("Transaction is still pending. Click Check Again in a few seconds.");
       }
     } finally {
       setCheckingReceipt(false);
     }
   }
 
+  function extractMatchIdFromReceipt(receipt: any) {
+    const escrowAddrLower = escrowAddress?.toLowerCase();
+    if (!escrowAddrLower) return null;
+    for (const log of receipt.logs) {
+      if (log.address.toLowerCase() !== escrowAddrLower) continue;
+      try {
+        const decoded = decodeEventLog({
+          abi: escrowAbi,
+          data: log.data,
+          topics: log.topics,
+        });
+        if (decoded.eventName === "MatchCreated") {
+          const id = decoded.args.matchId;
+          if (typeof id === "bigint") {
+            return id.toString();
+          }
+        }
+      } catch {
+        // ignore non-matching logs
+      }
+    }
+    return null;
+  }
+
   async function pollNextMatchId(expectedId: string) {
-    if (!publicClient || !escrowAddress) return;
+    if (!publicClient || !escrowAddress) return false;
     const expected = BigInt(expectedId);
-    for (let i = 0; i < 8; i += 1) {
+    for (let i = 0; i < NEXT_ID_POLL_TRIES; i += 1) {
       const nextId = await publicClient.readContract({
         address: escrowAddress,
         abi: escrowAbi,
@@ -223,10 +356,11 @@ export default function CreateMatchPage() {
       });
       if (typeof nextId === "bigint" && nextId > expected) {
         setMatchId(expectedId);
-        return;
+        return true;
       }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, NEXT_ID_POLL_INTERVAL_MS));
     }
+    return false;
   }
 
   return (
@@ -240,7 +374,7 @@ export default function CreateMatchPage() {
         <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:50px_50px] [mask-image:radial-gradient(ellipse_80%_80%_at_50%_50%,#000_70%,transparent_100%)]" />
       </div>
 
-      <div className="relative z-10 mx-auto max-w-3xl px-4 py-10 sm:px-6 sm:py-12">
+      <div className="relative z-10 mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10">
         <div className="mb-8 flex flex-col gap-4 border-b border-white/10 pb-6 sm:flex-row sm:items-center sm:justify-between">
           <h1 className="text-3xl font-black uppercase italic tracking-tighter text-white sm:text-4xl">
             Create <span className="text-transparent bg-clip-text bg-gradient-to-r from-sky-500 to-sky-200">Match</span>
@@ -261,10 +395,18 @@ export default function CreateMatchPage() {
           </div>
         </div>
 
+        <ConnectButton.Custom>
+          {({ openConnectModal }) => {
+            openConnectRef.current = openConnectModal;
+            return null;
+          }}
+        </ConnectButton.Custom>
+
         <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/10 via-white/5 to-transparent p-[1px] shadow-[0_20px_60px_rgba(0,0,0,0.55)]">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_10%,rgba(56,189,248,0.18),transparent_45%),radial-gradient(circle_at_90%_90%,rgba(59,130,246,0.12),transparent_45%)]" />
-          <div className="relative rounded-[22px] bg-slate-900/90 p-8 backdrop-blur-xl h-full">
-            <div className="grid gap-6">
+          <div className="relative rounded-[22px] bg-slate-900/90 p-5 backdrop-blur-xl sm:p-6 lg:p-7">
+            <div className="grid gap-6 lg:grid-cols-5 lg:items-start">
+              <div className="grid gap-5 lg:col-span-3 lg:pr-2">
               <div>
                 <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">Stake ({nativeSymbol})</label>
                 <input
@@ -280,7 +422,7 @@ export default function CreateMatchPage() {
 
               <div>
                 <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">Game</label>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {(["eFootball", "FC26", "FC25", "Mortal Kombat"] as const).map((g) => (
                     <button
                       key={g}
@@ -362,13 +504,10 @@ export default function CreateMatchPage() {
               <ConnectButton.Custom>
                 {({ openConnectModal }) => (
                   <button
-                    className="mt-4 w-full rounded-2xl border border-sky-500/40 bg-sky-500/20 p-4 text-xs font-bold uppercase tracking-wider text-sky-100 transition-all hover:bg-sky-500/30 disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm"
+                    className="mt-2 w-full rounded-2xl border border-sky-500/40 bg-sky-500/20 p-4 text-xs font-bold uppercase tracking-wider text-sky-100 transition-all hover:bg-sky-500/30 disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm"
                     onClick={() => {
                       if (!isConnected) {
-                        const shouldConnect =
-                          typeof window !== "undefined" &&
-                          window.confirm("Connect wallet to create a match?");
-                        if (!shouldConnect) return;
+                        openConnectRef.current = openConnectModal;
                         openConnectModal();
                         return;
                       }
@@ -380,15 +519,58 @@ export default function CreateMatchPage() {
                   </button>
                 )}
               </ConnectButton.Custom>
-            </div>
+              {createStatus !== "idle" && (
+                <div className="rounded-2xl border border-sky-500/20 bg-sky-500/10 p-3 text-xs text-sky-200">
+                  {createStatus === "signing"
+                    ? "Waiting for wallet confirmation..."
+                    : "Transaction sent, waiting for confirmation..."}
+                </div>
+              )}
 
-            {createStatus !== "idle" && (
-              <div className="mt-4 rounded-2xl border border-sky-500/20 bg-sky-500/10 p-3 text-xs text-sky-200">
-                {createStatus === "signing"
-                  ? "Waiting for wallet confirmation..."
-                  : "Transaction sent, waiting for confirmation..."}
+              {error && (
+                <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400 font-mono break-all">
+                  {error}
+                </div>
+              )}
               </div>
-            )}
+
+              <aside className="lg:col-span-2 lg:pl-1">
+                <div className="rounded-2xl border border-white/10 bg-black/50 p-4 text-xs text-gray-300">
+                  <div className="text-[10px] uppercase tracking-[0.35em] text-gray-500 mb-3">Match Rules & Safety</div>
+                  <div className="space-y-3">
+                    <div>
+                      <div className="uppercase tracking-wider text-sky-400 text-[11px]">{game} rules</div>
+                      {game === "Mortal Kombat" ? (
+                        <ul className="mt-2 list-disc pl-4 space-y-1 text-gray-400">
+                          <li>First to 3 wins (FT3), standard tournament settings.</li>
+                          <li>No custom modifiers, no consumables, no pause abuse.</li>
+                          <li>Disconnects before one round: replay; after a full round: opponent may claim win.</li>
+                          <li>Record final screen for dispute evidence.</li>
+                        </ul>
+                      ) : (
+                        <ul className="mt-2 list-disc pl-4 space-y-1 text-gray-400">
+                          <li>Standard 1v1 match, default competitive settings.</li>
+                          <li>No custom gameplay modifiers or assisted exploits.</li>
+                          <li>Disconnect before halftime: replay; after halftime: opponent may claim win.</li>
+                          <li>Record final score screen for disputes.</li>
+                        </ul>
+                      )}
+                    </div>
+                    <div>
+                      <div className="uppercase tracking-wider text-sky-400 text-[11px]">Fair play</div>
+                      <ul className="mt-2 list-disc pl-4 space-y-1 text-gray-400">
+                        <li>Respectful conduct; no harassment or cheating tools.</li>
+                        <li>Platform: {platform}. Timeframe: {timeframe} minutes.</li>
+                      </ul>
+                    </div>
+                    <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-[11px] text-red-300">
+                      Gambling Warning: This is a skill-based competition platform. Do not wager more than you can afford to lose.
+                      If you feel at risk of gambling addiction, please seek help in your region.
+                    </div>
+                  </div>
+                </div>
+              </aside>
+            </div>
 
             {!roomCode && txHash && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 sm:p-6">
@@ -403,7 +585,7 @@ export default function CreateMatchPage() {
                     {txHash && (
                       <button
                         className="flex-1 rounded-2xl border border-sky-500/40 bg-sky-500/10 px-4 py-3 text-xs font-bold uppercase tracking-wider text-sky-200"
-                        onClick={() => resolveMatchId(txHash as `0x${string}`, expectedMatchId)}
+                        onClick={() => void resolveMatchId(txHash as `0x${string}`, expectedMatchId)}
                         disabled={checkingReceipt}
                       >
                         {checkingReceipt ? "Checking..." : "Check Again"}
@@ -421,54 +603,40 @@ export default function CreateMatchPage() {
                   </div>
 
                   {txHash && (
-                    <div className="mt-4 text-[10px] uppercase tracking-[0.3em] text-gray-500">
-                      Transaction submitted
+                    <div className="mt-4 space-y-2">
+                      <div className="text-[10px] uppercase tracking-[0.3em] text-gray-500">
+                        Transaction submitted
+                      </div>
+                      {txExplorerUrl && (
+                        <a
+                          href={txExplorerUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-block rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-sky-200 hover:bg-sky-500/20"
+                        >
+                          Open In Explorer
+                        </a>
+                      )}
+                      {expectedRoomCode && (
+                        <button
+                          type="button"
+                          className="ml-2 rounded-xl border border-white/10 bg-white/5 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-white hover:bg-white/10"
+                          onClick={() => router.push(`/matches/${encodeURIComponent(expectedRoomCode)}?t=${encodeURIComponent(timeframe)}`)}
+                        >
+                          Open Provisional Room
+                        </button>
+                      )}
+                      <div className="text-[11px] text-amber-200/90">
+                        If pending for too long, use MetaMask Speed Up or Cancel, then retry.
+                      </div>
+                      <div className="text-[10px] text-gray-400">
+                        Auto-check attempts: {Math.min(autoRechecks, AUTO_RECHECK_MAX)}/{AUTO_RECHECK_MAX}
+                      </div>
                     </div>
                   )}
                 </div>
               </div>
             )}
-
-            {error && (
-              <div className="mt-4 rounded-2xl border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400 font-mono break-all">
-                {error}
-              </div>
-            )}
-
-            <div className="mt-6 rounded-2xl border border-white/10 bg-black/50 p-4 text-xs text-gray-300">
-              <div className="text-[10px] uppercase tracking-[0.35em] text-gray-500 mb-3">Match Rules & Safety</div>
-              <div className="space-y-3">
-                <div>
-                  <div className="uppercase tracking-wider text-sky-400 text-[11px]">{game} rules</div>
-                  {game === "Mortal Kombat" ? (
-                    <ul className="mt-2 list-disc pl-4 space-y-1 text-gray-400">
-                      <li>First to 3 wins (FT3), standard tournament settings.</li>
-                      <li>No custom modifiers, no consumables, no pause abuse.</li>
-                      <li>Disconnects before one round: replay; after a full round: opponent may claim win.</li>
-                      <li>Record final screen for dispute evidence.</li>
-                    </ul>
-                  ) : (
-                    <ul className="mt-2 list-disc pl-4 space-y-1 text-gray-400">
-                      <li>Standard 1v1 match, default competitive settings.</li>
-                      <li>No custom gameplay modifiers or assisted exploits.</li>
-                      <li>Disconnect before halftime: replay; after halftime: opponent may claim win.</li>
-                      <li>Record final score screen for disputes.</li>
-                    </ul>
-                  )}
-                </div>
-                <div>
-                  <div className="uppercase tracking-wider text-sky-400 text-[11px]">Fair play</div>
-                  <ul className="mt-2 list-disc pl-4 space-y-1 text-gray-400">
-                    <li>Respectful conduct; no harassment or cheating tools.</li>
-                    <li>Platform: {platform}. Timeframe: {timeframe} minutes.</li>
-                  </ul>
-                </div>
-                <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-[11px] text-red-300">
-                  Gambling Warning: This is a skill-based competition platform. Do not wager more than you can afford to lose.
-                  If you feel at risk of gambling addiction, please seek help in your region.
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       </div>

@@ -82,7 +82,7 @@ export default function TournamentDetailPage({ params }: { params: Promise<{ id:
 
               <div className="sm:col-span-3 rounded-2xl border border-white/10 bg-black/40 p-4">
                 <div className="text-[10px] uppercase tracking-[0.3em] text-gray-500">Payouts</div>
-                <div className="mt-3 grid grid-cols-3 gap-3 text-center">
+                <div className="mt-3 grid grid-cols-1 gap-3 text-center sm:grid-cols-3">
                   {payout.map((pct, idx) => (
                     <div key={pct} className="rounded-xl border border-white/10 bg-black/40 p-3">
                       <div className="text-[10px] uppercase tracking-widest text-gray-500">Pos {idx + 1}</div>
@@ -95,8 +95,8 @@ export default function TournamentDetailPage({ params }: { params: Promise<{ id:
           )}
 
           {selectedTab === "standings" && (
-            <div className="mt-6 overflow-hidden rounded-2xl border border-white/10">
-              <table className="w-full text-sm">
+            <div className="mt-6 overflow-x-auto rounded-2xl border border-white/10">
+              <table className="min-w-[560px] w-full text-sm">
                 <thead className="bg-black/60 text-xs uppercase tracking-widest text-gray-500">
                   <tr>
                     <th className="px-4 py-3 text-left">Player</th>

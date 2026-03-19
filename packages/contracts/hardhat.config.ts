@@ -1,5 +1,5 @@
 import hardhatToolboxMochaEthersPlugin from "@nomicfoundation/hardhat-toolbox-mocha-ethers";
-import { configVariable, defineConfig } from "hardhat/config";
+import { defineConfig } from "hardhat/config";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -16,6 +16,23 @@ if (fs.existsSync(envFile)) {
     if (!key || process.env[key] !== undefined) continue;
     process.env[key] = value;
   }
+}
+
+function asRpcUrl(...values: Array<string | undefined>) {
+  for (const value of values) {
+    if (value && value.trim().length > 0) return value.trim();
+  }
+  return undefined;
+}
+
+function asAccounts(...values: Array<string | undefined>) {
+  for (const value of values) {
+    if (!value) continue;
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    return [trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`];
+  }
+  return [];
 }
 
 export default defineConfig({
@@ -45,17 +62,41 @@ export default defineConfig({
       type: "edr-simulated",
       chainType: "op",
     },
+    polkadotHubTestnet: {
+      type: "http",
+      chainType: "l1",
+      url:
+        asRpcUrl(
+          process.env.POLKADOT_TESTNET_RPC_URL,
+          "https://eth-rpc-testnet.polkadot.io/",
+        ) ?? "https://eth-rpc-testnet.polkadot.io/",
+      accounts: asAccounts(
+        process.env.POLKADOT_TESTNET_PRIVATE_KEY,
+      ),
+    },
     moonbaseAlpha: {
       type: "http",
       chainType: "l1",
-      url: configVariable("MOONBASE_ALPHA_RPC_URL"),
-      accounts: [configVariable("MOONBASE_PRIVATE_KEY")],
+      url:
+        asRpcUrl(
+          process.env.MOONBASE_ALPHA_RPC_URL,
+          "https://rpc.api.moonbase.moonbeam.network",
+        ) ?? "https://rpc.api.moonbase.moonbeam.network",
+      accounts: asAccounts(
+        process.env.MOONBASE_PRIVATE_KEY,
+        process.env.POLKADOT_TESTNET_PRIVATE_KEY,
+      ),
     },
     moonbeam: {
       type: "http",
       chainType: "l1",
-      url: configVariable("MOONBEAM_RPC_URL"),
-      accounts: [configVariable("MOONBEAM_PRIVATE_KEY")],
+      url:
+        asRpcUrl(process.env.MOONBEAM_RPC_URL, process.env.POLKADOT_MAINNET_RPC_URL) ??
+        "https://rpc.api.moonbeam.network",
+      accounts: asAccounts(
+        process.env.MOONBEAM_PRIVATE_KEY,
+        process.env.POLKADOT_MAINNET_PRIVATE_KEY,
+      ),
     },
   },
 });

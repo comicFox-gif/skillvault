@@ -11,8 +11,11 @@
   },
   "dependencies": {
     "@rainbow-me/rainbowkit": "^2.2.10",
+    "@supabase/ssr": "^0.9.0",
+    "@supabase/supabase-js": "^2.99.2",
     "@tanstack/react-query": "^5.90.20",
     "next": "16.1.4",
+    "postgres": "^3.4.8",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "viem": "^2.44.4",

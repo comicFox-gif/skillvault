@@ -51,6 +51,13 @@ export const MATCH_ESCROW_ABI = [
   },
   {
     type: 'function',
+    name: 'concedeDispute',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: '_matchId', type: 'uint256' }],
+    outputs: [],
+  },
+  {
+    type: 'function',
     name: 'resolveProposalTimeout',
     stateMutability: 'nonpayable',
     inputs: [{ name: '_matchId', type: 'uint256' }],
@@ -107,6 +114,13 @@ export const MATCH_ESCROW_ABI = [
     stateMutability: 'view',
     inputs: [],
     outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'resolvedWinner',
+    stateMutability: 'view',
+    inputs: [{ name: '', type: 'uint256' }],
+    outputs: [{ name: '', type: 'address' }],
   },
   {
     type: 'function',

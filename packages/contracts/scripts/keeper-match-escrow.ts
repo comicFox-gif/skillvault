@@ -2,6 +2,22 @@ import { network } from "hardhat";
 
 const WATCH_MODE = process.env.KEEPER_WATCH === "1" || process.argv.includes("--watch");
 const POLL_MS = Number(process.env.KEEPER_POLL_MS || "5000");
+const CLI_NETWORK = (() => {
+  const idx = process.argv.findIndex((arg) => arg === "--network");
+  return idx >= 0 ? process.argv[idx + 1] : undefined;
+})();
+const ACTIVE_NETWORK = process.env.HARDHAT_NETWORK || CLI_NETWORK || "unknown";
+
+function resolveEscrowAddress() {
+  const normalized = ACTIVE_NETWORK.toLowerCase();
+  if (normalized.includes("polkadot")) {
+    return process.env.POLKADOT_MATCH_ESCROW_ADDRESS || process.env.MATCH_ESCROW_ADDRESS;
+  }
+  if (normalized.includes("moonbase")) {
+    return process.env.MOONBASE_MATCH_ESCROW_ADDRESS || process.env.MATCH_ESCROW_ADDRESS;
+  }
+  return process.env.MATCH_ESCROW_ADDRESS;
+}
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -11,9 +27,15 @@ async function runOnce() {
   const { ethers } = await network.connect();
   const [keeper] = await ethers.getSigners();
 
-  const escrowAddress = process.env.MATCH_ESCROW_ADDRESS;
-  if (!escrowAddress || !ethers.isAddress(escrowAddress)) {
-    throw new Error("Set MATCH_ESCROW_ADDRESS in packages/contracts/.env");
+  const escrowAddress = resolveEscrowAddress();
+  if (
+    !escrowAddress ||
+    !ethers.isAddress(escrowAddress) ||
+    escrowAddress.toLowerCase() === ethers.ZeroAddress.toLowerCase()
+  ) {
+    throw new Error(
+      "Set a valid escrow address in .env (network-specific key or MATCH_ESCROW_ADDRESS).",
+    );
   }
 
   const escrow = await ethers.getContractAt("SkillVaultMatchEscrow", escrowAddress, keeper);
@@ -66,12 +88,12 @@ async function runOnce() {
   }
 
   console.log(
-    `[keeper] scan complete on ${network.name} with ${nextMatchId} matches: finalized=${finalized}, skipped=${skipped}, errors=${errors}`,
+    `[keeper] scan complete on ${ACTIVE_NETWORK} with ${nextMatchId} matches: finalized=${finalized}, skipped=${skipped}, errors=${errors}`,
   );
 }
 
 async function main() {
-  console.log(`[keeper] starting on network=${network.name}, watch=${WATCH_MODE}, poll=${POLL_MS}ms`);
+  console.log(`[keeper] starting on network=${ACTIVE_NETWORK}, watch=${WATCH_MODE}, poll=${POLL_MS}ms`);
   do {
     await runOnce();
     if (!WATCH_MODE) break;

@@ -158,6 +158,35 @@ describe("SkillVaultMatchEscrow", function () {
     expect(resolved.proposedWinner).to.equal(player2.address);
   });
 
+  it("lets a losing player concede an active dispute and releases payout to opponent", async function () {
+    const { escrow, player1, player2, treasury } = await deployFixture();
+    const stake = ethers.parseEther("0.5");
+    const totalPot = stake * 2n;
+    const fee = (totalPot * 200n) / 10000n;
+    const payout = totalPot - fee;
+
+    await escrow.connect(player1).createMatch(player2.address, stake, 3600, 600, { value: stake });
+    await escrow.connect(player2).joinMatch(0, { value: stake });
+    await escrow.connect(player1).proposeWinner(0, player1.address);
+    await escrow.connect(player2).dispute(0);
+
+    const winnerBefore = await ethers.provider.getBalance(player2.address);
+    const treasuryBefore = await ethers.provider.getBalance(treasury.address);
+
+    await expect(escrow.connect(player1).concedeDispute(0))
+      .to.emit(escrow, "WinnerConfirmed")
+      .withArgs(0, player2.address, payout, fee);
+
+    const winnerAfter = await ethers.provider.getBalance(player2.address);
+    const treasuryAfter = await ethers.provider.getBalance(treasury.address);
+    expect(winnerAfter - winnerBefore).to.equal(payout);
+    expect(treasuryAfter - treasuryBefore).to.equal(fee);
+
+    const resolved = await escrow.matches(0);
+    expect(resolved.status).to.equal(5n); // Resolved
+    expect(resolved.proposedWinner).to.equal(player2.address);
+  });
+
   it("supports open matches where opponent is set on join", async function () {
     const { escrow, player1, player2 } = await deployFixture();
     const stake = ethers.parseEther("0.25");

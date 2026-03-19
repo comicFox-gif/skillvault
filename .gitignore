@@ -13,6 +13,7 @@ node_modules/
 .turbo/
 dist/
 coverage/
+apps/web/data/
 
 # Logs / OS / editor
 *.log

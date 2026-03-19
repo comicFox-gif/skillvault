@@ -2,7 +2,7 @@
 
 Skill Vault is a Web3 skill-gaming escrow platform for 1v1 matches and tournaments.
 
-Players lock equal stakes into an on-chain escrow, play a match, and settle outcomes on Moonbase Alpha (Polkadot ecosystem EVM). A keeper bot auto-finalizes timed-out results so one player cannot indefinitely block payouts by going offline.
+Players lock equal stakes into an on-chain escrow, play a match, and settle outcomes on EVM testnets (Polkadot Hub TestNet + Moonbase Alpha). A keeper bot auto-finalizes timed-out results so one player cannot indefinitely block payouts by going offline.
 
 This repo is organized as a monorepo with:
 - `apps/web`: Next.js frontend
@@ -17,7 +17,7 @@ This repo is organized as a monorepo with:
 - Outcome flow: `I won`, `I lost`, accept/cancel to dispute
 - Timeout settlement automation via keeper bot
 - On-chain player history panel (wins/losses/disputes/no-response flags)
-- Moonbase Alpha native token support (`DEV`)
+- Multi-chain support for Polkadot Hub TestNet (`PAS`) and Moonbase Alpha (`DEV`)
 
 ## Tech Stack
 
@@ -26,75 +26,30 @@ This repo is organized as a monorepo with:
 - Contracts: Solidity 0.8.28, Hardhat 3, ethers v6
 - Monorepo tooling: npm workspaces, Turborepo
 
-## Monorepo Structure
-
-```text
-skill-vault/
-  apps/
-    web/                      # Next.js app
-  packages/
-    contracts/                # Hardhat workspace
-      contracts/
-        SkillVaultMatchEscrow.sol
-      scripts/
-        deploy-match-escrow.ts
-        keeper-match-escrow.ts
-      test/
-        SkillVaultMatchEscrow.ts
-```
-
-## Escrow Contract Overview
-
-Main contract: `packages/contracts/contracts/SkillVaultMatchEscrow.sol`
-
-Core functions:
-- `createMatch(opponent, stake, joinWindow, confirmWindow)` (payable)
-- `joinMatch(matchId)` (payable)
-- `proposeWinner(matchId, winner)`
-- `confirmWinner(matchId)`
-- `dispute(matchId)`
-- `cancel(matchId)`
-- `forfeit(matchId)` (available in contract; UI currently focuses on outcome/dispute flow)
-- `finalizeResultAfterTimeout(matchId)` for timed-out result proposals
-- `adminResolve(matchId, winner, refundBoth)` for disputed/stuck matches
-
-State progression:
-- `Created -> Funded -> ResultProposed -> Resolved`
-- `ResultProposed -> Disputed -> Resolved` when conflict/forced dispute
-- `Created/Funded -> Cancelled` during valid cancel windows
-
-Payout model:
-- Total pot is `stake * 2`
-- Platform fee: `2%` (`FEE_BPS = 200`)
-- Winner receives `98%` of total pot
-
 ## Keeper Bot (Anti-Stall Settlement)
 
 Script: `packages/contracts/scripts/keeper-match-escrow.ts`
 
-What it does:
-- Scans all matches up to `nextMatchId`
-- Finds matches in `ResultProposed` with expired `confirmBy`
-- Calls `finalizeResultAfterTimeout(matchId)`
+Run once (Polkadot):
 
-Why it matters:
-- If one player reports result and the other rage quits/offlines, timeout can still settle automatically
-- Removes dependency on the non-responsive player to unblock payout
+```bash
+npm run keeper:escrow:polkadot -w contracts
+```
 
-Run once:
+Run watch mode (Polkadot):
+
+```bash
+npm run keeper:escrow:polkadot:watch -w contracts
+```
+
+Moonbase equivalents:
 
 ```bash
 npm run keeper:escrow:moonbase -w contracts
-```
-
-Run in watch mode:
-
-```bash
 npm run keeper:escrow:moonbase:watch -w contracts
 ```
 
-Note: the npm watch script uses Windows env syntax (`set KEEPER_WATCH=1&& ...`).  
-On macOS/Linux, run:
+On macOS/Linux:
 
 ```bash
 cd packages/contracts
@@ -114,14 +69,16 @@ npm install
 Create `packages/contracts/.env` from `packages/contracts/.env.example`:
 
 ```env
-MOONBASE_ALPHA_RPC_URL=https://rpc.api.moonbase.moonbeam.network
-MOONBASE_PRIVATE_KEY=0xYOUR_DEPLOYER_OR_KEEPER_PRIVATE_KEY
+POLKADOT_TESTNET_RPC_URL=https://eth-rpc-testnet.polkadot.io/
+POLKADOT_TESTNET_PRIVATE_KEY=0xYOUR_PRIVATE_KEY
 
-MOONBEAM_RPC_URL=https://rpc.api.moonbeam.network
-MOONBEAM_PRIVATE_KEY=0xYOUR_MAINNET_KEY
+MOONBASE_ALPHA_RPC_URL=https://rpc.api.moonbase.moonbeam.network
+MOONBASE_PRIVATE_KEY=0xYOUR_PRIVATE_KEY
 
 MATCH_ESCROW_TREASURY=0x0000000000000000000000000000000000000000
 MATCH_ESCROW_ADDRESS=0x0000000000000000000000000000000000000000
+POLKADOT_MATCH_ESCROW_ADDRESS=0x0000000000000000000000000000000000000000
+MOONBASE_MATCH_ESCROW_ADDRESS=0x0000000000000000000000000000000000000000
 KEEPER_POLL_MS=15000
 ```
 
@@ -130,101 +87,58 @@ KEEPER_POLL_MS=15000
 Create `apps/web/.env.local` from `apps/web/.env.example`:
 
 ```env
-NEXT_PUBLIC_MATCH_ESCROW_ADDRESS=0x0000000000000000000000000000000000000000
 NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=YOUR_WALLETCONNECT_PROJECT_ID
+NEXT_PUBLIC_MATCH_ESCROW_ADDRESS=0x0000000000000000000000000000000000000000
 
-NEXT_PUBLIC_CHAIN_ID=1287
-NEXT_PUBLIC_CHAIN_NAME=Moonbase Alpha
-NEXT_PUBLIC_NATIVE_NAME=DEV
-NEXT_PUBLIC_NATIVE_SYMBOL=DEV
-NEXT_PUBLIC_RPC_URL=https://rpc.api.moonbase.moonbeam.network
-NEXT_PUBLIC_EXPLORER_URL=https://moonbase.moonscan.io
-NEXT_PUBLIC_CHAIN_TESTNET=true
-```
+NEXT_PUBLIC_POLKADOT_CHAIN_ID=420420417
+NEXT_PUBLIC_POLKADOT_CHAIN_NAME=Polkadot Hub TestNet
+NEXT_PUBLIC_POLKADOT_NATIVE_NAME=Polkadot Asset Hub TestNet
+NEXT_PUBLIC_POLKADOT_NATIVE_SYMBOL=PAS
+NEXT_PUBLIC_POLKADOT_RPC_URL=https://eth-rpc-testnet.polkadot.io/
+NEXT_PUBLIC_POLKADOT_EXPLORER_URL=https://blockscout-passet-hub.parity-testnet.parity.io/
+NEXT_PUBLIC_POLKADOT_CHAIN_TESTNET=true
+NEXT_PUBLIC_POLKADOT_MATCH_ESCROW_ADDRESS=0x0000000000000000000000000000000000000000
 
-Optional for admin UI:
+NEXT_PUBLIC_MOONBASE_CHAIN_ID=1287
+NEXT_PUBLIC_MOONBASE_CHAIN_NAME=Moonbase Alpha
+NEXT_PUBLIC_MOONBASE_NATIVE_NAME=DEV
+NEXT_PUBLIC_MOONBASE_NATIVE_SYMBOL=DEV
+NEXT_PUBLIC_MOONBASE_RPC_URL=https://rpc.api.moonbase.moonbeam.network
+NEXT_PUBLIC_MOONBASE_EXPLORER_URL=https://moonbase.moonscan.io
+NEXT_PUBLIC_MOONBASE_CHAIN_TESTNET=true
+NEXT_PUBLIC_MOONBASE_MATCH_ESCROW_ADDRESS=0x0000000000000000000000000000000000000000
 
-```env
 NEXT_PUBLIC_ADMIN_PASSWORD=2162
 ```
 
-### 4) Run the frontend
-
-From repo root:
-
-```bash
-npm run dev
-```
-
-Or only web workspace:
+### 4) Run app
 
 ```bash
 npm run dev -w web
 ```
 
-## Contract Development
+## Deploy
 
-Compile:
-
-```bash
-npm run compile -w contracts
-```
-
-Run tests:
+Deploy to Polkadot:
 
 ```bash
-npm run test -w contracts
+npm run deploy:escrow:polkadot -w contracts
 ```
 
-Escrow-focused tests:
-
-```bash
-npm run test:escrow -w contracts
-```
-
-Deploy to Moonbase Alpha:
+Deploy to Moonbase:
 
 ```bash
 npm run deploy:escrow:moonbase -w contracts
 ```
 
 After deploy:
-- Copy deployed escrow address to `packages/contracts/.env` as `MATCH_ESCROW_ADDRESS`
-- Copy same address to `apps/web/.env.local` as `NEXT_PUBLIC_MATCH_ESCROW_ADDRESS`
+- Set `NEXT_PUBLIC_POLKADOT_MATCH_ESCROW_ADDRESS` and `NEXT_PUBLIC_MOONBASE_MATCH_ESCROW_ADDRESS`
+- Set keeper targets `POLKADOT_MATCH_ESCROW_ADDRESS` and `MOONBASE_MATCH_ESCROW_ADDRESS`
 
-## Frontend Feature Notes
+## Admin
 
-- Home page status indicator is online only when wallet is connected
-- Create Match flow auto-opens match control center after successful creation
-- Match IDs shown as 6-digit room codes (legacy IDs remain compatible)
-- If room already has creator+opponent and a third wallet tries to join, UI shows `Room Full`
-- Opponent can join and lock stake directly from room page
-- Outcome controls unlock only after the 60-second post-join grace window
-- Match page shows wallet balance
-- Match page shows total stake / possible win panel
-- Match page shows timeout countdown for keeper auto-finalization
-- Match page shows post-match actions (`Rematch Same Stake`, `Exit + New Amount`)
-
-## Admin and Tournaments
-
-- `/admin`: basic dispute resolution panel (password-gated in frontend)
-- `/tournaments/*`: currently mock UI/demo pages, not wired to on-chain tournament contracts yet
-
-## Security and Production Notes
-
-- This repository is currently optimized for hackathon/demo flow
-- `NEXT_PUBLIC_ADMIN_PASSWORD` is client-exposed and not production secure
-- Frontend reads on-chain history directly by scanning matches; this can become heavy at scale
-- For production, use an indexer/database for analytics/history and move admin auth server-side
-- Never commit real private keys or funded wallet secrets
-
-## Suggested Roadmap
-
-- Add backend/indexer for scalable match history and reputation
-- Implement robust tournament smart contracts and bracket state
-- Add server-side admin auth and role-based controls
-- Add alerts/monitoring for keeper health and settlement failures
-- Add full audit hardening before mainnet use
+- Admin route: `/comicfoxxx`
+- `/admin` is disabled (not found)
 
 ## License
 

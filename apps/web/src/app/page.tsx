@@ -10,7 +10,6 @@ export default function VaultPage() {
   const { disconnect } = useDisconnect();
   const [walletMenuOpen, setWalletMenuOpen] = useState(false);
   const [showConnectPrompt, setShowConnectPrompt] = useState(false);
-  const [showWalletConnectPrompt, setShowWalletConnectPrompt] = useState(false);
   const walletMenuRef = useRef<HTMLDivElement | null>(null);
   const openConnectRef = useRef<(() => void) | null>(null);
   const systemOnline = Boolean(isConnected);
@@ -34,6 +33,29 @@ export default function VaultPage() {
     setShowConnectPrompt(true);
   }
 
+  async function handleLinkWalletClick(openConnectModal: () => void) {
+    try {
+      const ethereum = (
+        window as Window & {
+          ethereum?: { request?: (args: { method: string; params?: unknown[] }) => Promise<unknown> };
+        }
+      ).ethereum;
+      if (ethereum?.request) {
+        try {
+          // Force a fresh permission request path so MetaMask shows connect prompt again.
+          await ethereum.request({
+            method: "wallet_revokePermissions",
+            params: [{ eth_accounts: {} }],
+          });
+        } catch {
+          // Ignore unsupported or user-cancelled revoke; still open connector.
+        }
+      }
+    } finally {
+      openConnectModal();
+    }
+  }
+
 
   return (
     <main
@@ -48,39 +70,19 @@ export default function VaultPage() {
 
       <div className="relative z-10 mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
         {/* Header */}
-        <header className="mb-10 flex flex-col items-start justify-between gap-6 border-b border-white/5 pb-6 sm:mb-12 sm:flex-row sm:items-center">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center border border-sky-500/30 bg-sky-500/10 [transform:skewX(-10deg)]">
-              <span className="font-bold text-sky-400 [transform:skewX(10deg)]">SV</span>
+        <header className="mb-10 border-b border-white/5 pb-6 sm:mb-12">
+          <div className="flex w-full items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center border border-sky-500/30 bg-sky-500/10 [transform:skewX(-10deg)]">
+                <span className="font-bold text-sky-400 [transform:skewX(10deg)]">SV</span>
+              </div>
+              <div>
+                <h1 className="text-xl font-bold uppercase tracking-tighter text-white sm:text-2xl">
+                  Skill <span className="text-sky-500">Vault</span>
+                </h1>
+              </div>
             </div>
-            <div>
-              <h1 className="text-xl font-bold uppercase tracking-tighter text-white sm:text-2xl">
-                Skill <span className="text-sky-500">Vault</span>
-              </h1>
-            </div>
-          </div>
 
-          <div className="flex w-full flex-wrap items-center gap-4 sm:w-auto">
-            <Link
-              href="/matches"
-              className="text-xs font-bold uppercase tracking-wider text-gray-400 transition-colors hover:text-white sm:text-sm"
-            >
-              Matches
-            </Link>
-            <Link
-              href="/tournaments"
-              className="text-xs font-bold uppercase tracking-wider text-gray-400 transition-colors hover:text-white sm:text-sm"
-            >
-              Tournaments
-            </Link>
-            <Link
-              href="/matches/create"
-              className="rounded-md border border-red-400/70 bg-red-600 px-3 py-2 text-xs font-bold uppercase tracking-wider text-white transition-colors hover:bg-red-500 sm:text-sm"
-              onClick={handleCreateMatchClick}
-            >
-              Create Match
-            </Link>
-            <div className="hidden h-6 w-px bg-white/10 sm:block" />
             {!isConnected ? (
               <ConnectButton.Custom>
                 {({ openConnectModal }) => {
@@ -88,12 +90,13 @@ export default function VaultPage() {
                   return (
                     <button
                       type="button"
-                      onClick={() => setShowWalletConnectPrompt(true)}
-                      className="relative w-full overflow-hidden rounded-[3px] border border-sky-500/60 bg-transparent px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-sky-200 transition hover:bg-sky-500/10 sm:w-auto sm:tracking-[0.2em]"
+                      onClick={() => void handleLinkWalletClick(openConnectModal)}
+                      className="relative overflow-hidden rounded-[3px] border border-sky-500/60 bg-transparent px-3 py-2 text-xs font-semibold uppercase text-sky-200 transition hover:bg-sky-500/10 sm:tracking-[0.2em]"
                     >
                       <span className="relative flex items-center gap-2">
                         <span className="inline-flex h-2 w-2 rounded-full bg-sky-400" />
-                        Link Wallet
+                        <span className="sm:hidden">Connect</span>
+                        <span className="hidden sm:inline">Link Wallet</span>
                       </span>
                     </button>
                   );
@@ -104,7 +107,7 @@ export default function VaultPage() {
                 <button
                   type="button"
                   onClick={() => setWalletMenuOpen((open) => !open)}
-                  className="relative w-full overflow-hidden rounded-[3px] border border-sky-500/60 bg-transparent px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-sky-200 transition hover:bg-sky-500/10 sm:w-auto sm:tracking-[0.25em]"
+                  className="relative overflow-hidden rounded-[3px] border border-sky-500/60 bg-transparent px-3 py-2 text-xs font-semibold uppercase text-sky-200 transition hover:bg-sky-500/10 sm:px-4 sm:tracking-[0.25em]"
                 >
                   <span className="relative flex items-center gap-2">
                     <span className="inline-flex h-2 w-2 rounded-full bg-sky-400" />
@@ -176,6 +179,28 @@ export default function VaultPage() {
               </div>
             )}
           </div>
+
+          <div className="mt-4 flex w-full flex-wrap items-center gap-4">
+            <Link
+              href="/matches"
+              className="text-xs font-bold uppercase tracking-wider text-gray-400 transition-colors hover:text-white sm:text-sm"
+            >
+              Matches
+            </Link>
+            <Link
+              href="/tournaments"
+              className="text-xs font-bold uppercase tracking-wider text-gray-400 transition-colors hover:text-white sm:text-sm"
+            >
+              Tournaments
+            </Link>
+            <Link
+              href="/matches/create"
+              className="rounded-md border border-red-400/70 bg-red-600 px-3 py-2 text-xs font-bold uppercase tracking-wider text-white transition-colors hover:bg-red-500 sm:text-sm"
+              onClick={handleCreateMatchClick}
+            >
+              Create Match
+            </Link>
+          </div>
         </header>
 
         {/* Main Content Grid */}
@@ -202,14 +227,14 @@ export default function VaultPage() {
               {systemOnline ? "System Online" : "System Offline"}
             </div>
 
-            <h2 className="text-4xl font-black uppercase italic leading-none tracking-tighter text-white sm:text-5xl md:text-7xl">
+            <h2 className="text-3xl font-black uppercase italic leading-none tracking-tighter text-white sm:text-5xl md:text-7xl">
               Dominate <br />
               <span className="text-transparent bg-clip-text bg-gradient-to-r from-sky-500 to-sky-200">
                 The Arena
               </span>
             </h2>
 
-            <p className="mt-6 max-w-lg text-lg text-gray-400 leading-relaxed">
+            <p className="mt-6 max-w-lg text-base text-gray-400 leading-relaxed sm:text-lg">
               High-stakes 1v1 escrow protocol. Secure your funds, challenge opponents, and settle disputes on-chain.
             </p>
 
@@ -219,14 +244,14 @@ export default function VaultPage() {
                 className="group border border-red-400/80 bg-red-600 p-4 backdrop-blur-sm transition-all hover:bg-red-500"
                 onClick={handleCreateMatchClick}
               >
-                <div className="mt-1 text-2xl font-bold text-white">Create Match</div>
+                <div className="mt-1 text-xl font-bold text-white sm:text-2xl">Create Match</div>
                 <p className="mt-1 text-xs text-red-100/90">Lock stake and share invite link</p>
               </Link>
               <Link
                 href="/matches"
                 className="group border border-sky-500/30 bg-sky-500/10 p-4 backdrop-blur-sm transition-all hover:bg-sky-500/20"
               >
-                <div className="mt-1 text-2xl font-bold text-white">Join / Search Match</div>
+                <div className="mt-1 text-xl font-bold text-white sm:text-2xl">Join / Search Match</div>
                 <p className="mt-1 text-xs text-sky-200/80">Enter room code and join your opponent</p>
               </Link>
             </div>
@@ -287,43 +312,6 @@ export default function VaultPage() {
                 }}
               >
                 Connect Wallet
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showWalletConnectPrompt && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4"
-          onClick={() => setShowWalletConnectPrompt(false)}
-        >
-          <div
-            className="w-full max-w-md rounded-3xl border border-white/10 bg-slate-900/95 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="text-[11px] uppercase tracking-[0.35em] text-sky-400/80">Wallet Access</div>
-            <h3 className="mt-2 text-2xl font-semibold text-white">Connect wallet now?</h3>
-            <p className="mt-3 text-sm text-gray-400">
-              Continue to open your wallet connector and approve account access.
-            </p>
-            <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <button
-                type="button"
-                className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs font-bold uppercase tracking-wider text-white hover:bg-white/10"
-                onClick={() => setShowWalletConnectPrompt(false)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="rounded-2xl border border-sky-500/40 bg-sky-500/20 px-4 py-3 text-xs font-bold uppercase tracking-wider text-sky-100 hover:bg-sky-500/30"
-                onClick={() => {
-                  setShowWalletConnectPrompt(false);
-                  openConnectRef.current?.();
-                }}
-              >
-                Continue
               </button>
             </div>
           </div>

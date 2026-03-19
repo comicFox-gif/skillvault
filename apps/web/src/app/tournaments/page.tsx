@@ -80,7 +80,7 @@ export default function TournamentsPage() {
                     {t.size} players - {t.timeframe} - {t.startsAt}
                   </div>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-3">
                   <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-xs uppercase tracking-wider text-sky-300">
                     {t.status}
                   </span>

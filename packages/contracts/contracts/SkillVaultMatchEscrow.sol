@@ -24,6 +24,7 @@ contract SkillVaultMatchEscrow {
     mapping(uint256 => Match) public matches;
     mapping(uint256 => address) public creatorReportedWinner;
     mapping(uint256 => address) public opponentReportedWinner;
+    mapping(uint256 => address) public resolvedWinner;
     uint256 public nextMatchId;
     address public treasury;
     address public admin;
@@ -78,6 +79,7 @@ contract SkillVaultMatchEscrow {
         m.proposedWinner = address(0);
         creatorReportedWinner[matchId] = address(0);
         opponentReportedWinner[matchId] = address(0);
+        resolvedWinner[matchId] = address(0);
 
         emit MatchCreated(matchId, msg.sender, _opponent, _stake);
         emit Deposited(matchId, msg.sender, msg.value);
@@ -182,6 +184,19 @@ contract SkillVaultMatchEscrow {
         emit Disputed(_matchId);
     }
 
+    function concedeDispute(uint256 _matchId) external {
+        Match storage m = matches[_matchId];
+        require(m.status == Status.Disputed, "Not disputed");
+        require(msg.sender == m.creator || msg.sender == m.opponent, "Not player");
+
+        address winner = msg.sender == m.creator ? m.opponent : m.creator;
+        require(winner != address(0), "Opponent missing");
+
+        m.proposedWinner = winner;
+        emit Forfeited(_matchId, msg.sender, winner);
+        _payout(_matchId, winner);
+    }
+
     function resolveProposalTimeout(uint256 _matchId) external {
         Match storage m = matches[_matchId];
         require(m.status == Status.ResultProposed, "No result proposed");
@@ -230,6 +245,7 @@ contract SkillVaultMatchEscrow {
 
         if (_refund) {
             m.status = Status.Resolved;
+            resolvedWinner[_matchId] = address(0);
             uint256 refundAmount = m.stake;
             
             if (m.creatorPaid) _safeTransfer(m.creator, refundAmount, "Creator refund failed");
@@ -264,6 +280,7 @@ contract SkillVaultMatchEscrow {
     function _payout(uint256 _matchId, address _winner) internal {
         Match storage m = matches[_matchId];
         m.status = Status.Resolved;
+        resolvedWinner[_matchId] = _winner;
         
         uint256 totalPot = m.stake * 2;
         uint256 fee = (totalPot * FEE_BPS) / 10000;

@@ -1,14 +1,48 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, use } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useMemo, useRef, useState, use, type ChangeEvent } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { useAccount, useBalance, usePublicClient, useReadContract, useWriteContract } from "wagmi";
-import { formatEther, zeroAddress, type Address } from "viem";
+import { useAccount, useBalance, useChainId, usePublicClient, useReadContract, useWriteContract } from "wagmi";
+import { decodeEventLog, formatEther, zeroAddress, type Address } from "viem";
 import { decodeMatchCode, encodeMatchCode } from "@/lib/matchCode";
+import { appendDisputeEvidence, loadDisputeEvidence, type DisputeEvidenceItem } from "@/lib/disputeEvidence";
+import {
+  ensureDisputeAutoMessage,
+  loadDisputeMessages,
+  type DisputeMessageItem,
+} from "@/lib/disputeMessages";
+import {
+  getEscrowAddressForChain,
+  getNativeSymbolForChain,
+  getSupportedChainNames,
+  isSupportedChainId,
+} from "@/lib/chains";
 
 const escrowAbi = [
+  {
+    type: "function",
+    name: "createMatch",
+    stateMutability: "payable",
+    inputs: [
+      { name: "opponent", type: "address" },
+      { name: "stake", type: "uint256" },
+      { name: "joinBySeconds", type: "uint64" },
+      { name: "confirmBySeconds", type: "uint64" },
+    ],
+    outputs: [{ name: "matchId", type: "uint256" }],
+  },
+  {
+    type: "event",
+    name: "MatchCreated",
+    inputs: [
+      { name: "matchId", type: "uint256", indexed: true },
+      { name: "creator", type: "address", indexed: true },
+      { name: "opponent", type: "address", indexed: true },
+      { name: "stake", type: "uint256", indexed: false },
+    ],
+  },
   // views
   {
     type: "function",
@@ -67,6 +101,13 @@ const escrowAbi = [
     inputs: [{ name: "", type: "uint256" }],
     outputs: [{ name: "", type: "address" }],
   },
+  {
+    type: "function",
+    name: "resolvedWinner",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "uint256" }],
+    outputs: [{ name: "", type: "address" }],
+  },
 
   // actions
   { type: "function", name: "joinMatch", stateMutability: "payable", inputs: [{ name: "matchId", type: "uint256" }], outputs: [] },
@@ -74,6 +115,7 @@ const escrowAbi = [
   { type: "function", name: "confirmWinner", stateMutability: "nonpayable", inputs: [{ name: "matchId", type: "uint256" }], outputs: [] },
   { type: "function", name: "forfeit", stateMutability: "nonpayable", inputs: [{ name: "matchId", type: "uint256" }], outputs: [] },
   { type: "function", name: "dispute", stateMutability: "nonpayable", inputs: [{ name: "matchId", type: "uint256" }], outputs: [] },
+  { type: "function", name: "concedeDispute", stateMutability: "nonpayable", inputs: [{ name: "matchId", type: "uint256" }], outputs: [] },
   { type: "function", name: "cancel", stateMutability: "nonpayable", inputs: [{ name: "matchId", type: "uint256" }], outputs: [] },
 ] as const;
 
@@ -116,11 +158,60 @@ type WalletHistory = {
   noResponseFlags: number;
   entries: HistoryEntry[];
 };
+type EvidenceAttachment = {
+  name: string;
+  sizeBytes: number;
+  mimeType: string;
+  dataUrl: string;
+};
+type RematchIntent = {
+  oldMatchId: string;
+  newMatchId: string;
+  newRoomCode: string;
+  requestedBy: string;
+  requestedByRole: "creator" | "opponent";
+  creator: string;
+  opponent: string;
+  stake: string;
+  timeframe: string;
+  joinMins: string;
+  game: string;
+  platform: string;
+  status: "pending" | "joined" | "cancelled";
+  createdAt: number;
+  updatedAt: number;
+  joinedBy?: string;
+  cancelledBy?: string;
+};
+
+const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024;
+const MIN_EVIDENCE_BYTES = 40 * 1024;
+const EVIDENCE_NOTE_MIN_LENGTH = 12;
+const DISPUTE_CLICK_COOLDOWN_MS = 50_000;
+const REMATCH_RECEIPT_WAIT_TIMEOUT_MS = 30_000;
+const REMATCH_RECEIPT_POLL_INTERVAL_MS = 2_000;
+
+function formatFileSize(sizeBytes: number) {
+  if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) return "0 B";
+  if (sizeBytes < 1024) return `${sizeBytes} B`;
+  if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
+  return `${(sizeBytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function formatCountdown(totalSeconds: number | null) {
+  if (totalSeconds === null) return "-";
+  const safe = Math.max(0, totalSeconds);
+  const mins = Math.floor(safe / 60);
+  const secs = safe % 60;
+  return `${mins}m ${secs.toString().padStart(2, "0")}s`;
+}
 
 export default function MatchDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const router = useRouter();
   const searchParams = useSearchParams();
   const { address, isConnected } = useAccount();
+  const chainId = useChainId();
   const walletBalanceQuery = useBalance({
     address,
     query: { enabled: Boolean(isConnected && address) },
@@ -132,8 +223,9 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     value?: bigint;
     nonce?: number;
   };
-  const escrowAddress = process.env.NEXT_PUBLIC_MATCH_ESCROW_ADDRESS as `0x${string}` | undefined;
-  const nativeSymbol = process.env.NEXT_PUBLIC_NATIVE_SYMBOL || "DEV";
+  const escrowAddress = getEscrowAddressForChain(chainId);
+  const nativeSymbol = getNativeSymbolForChain(chainId);
+  const chainSupported = isSupportedChainId(chainId);
 
   const decodedMatchId = useMemo(() => decodeMatchCode(id), [id]);
   const hasValidRoomCode = decodedMatchId !== null;
@@ -168,6 +260,13 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     args: [matchId] as const,
     query: { enabled: Boolean(escrowAddress && hasValidRoomCode), refetchInterval: 2000 },
   });
+  const resolvedWinnerQuery = useReadContract({
+    address: escrowAddress,
+    abi: escrowAbi,
+    functionName: "resolvedWinner",
+    args: [matchId] as const,
+    query: { enabled: Boolean(escrowAddress && hasValidRoomCode), refetchInterval: 4000 },
+  });
 
   const [txHash, setTxHash] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -175,6 +274,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const [cancelCountdown, setCancelCountdown] = useState<number | null>(null);
   const [showLoseConfirm, setShowLoseConfirm] = useState(false);
   const [showDisputeConfirm, setShowDisputeConfirm] = useState(false);
+  const [showConcedeDisputeConfirm, setShowConcedeDisputeConfirm] = useState(false);
   const [showAwaitingOpponent, setShowAwaitingOpponent] = useState(false);
   const [historyByWallet, setHistoryByWallet] = useState<Record<string, WalletHistory>>({});
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -185,7 +285,21 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const [isOutcomeSubmitting, setIsOutcomeSubmitting] = useState(false);
   const [copiedRoomCode, setCopiedRoomCode] = useState(false);
   const [copiedMatchLink, setCopiedMatchLink] = useState(false);
+  const [showDisputePanel, setShowDisputePanel] = useState(false);
+  const [rematchIntent, setRematchIntent] = useState<RematchIntent | null>(null);
+  const [isRematching, setIsRematching] = useState(false);
+  const [rematchStatusText, setRematchStatusText] = useState("");
+  const [disputeEvidence, setDisputeEvidence] = useState<DisputeEvidenceItem[]>([]);
+  const [disputeMessages, setDisputeMessages] = useState<DisputeMessageItem[]>([]);
+  const [evidenceAttachment, setEvidenceAttachment] = useState<EvidenceAttachment | null>(null);
+  const [evidenceNote, setEvidenceNote] = useState("");
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
+  const [disputeCooldownUntilMs, setDisputeCooldownUntilMs] = useState<number | null>(null);
+  const [disputeCooldownNowMs, setDisputeCooldownNowMs] = useState(() => Date.now());
   const openConnectRef = useRef<(() => void) | null>(null);
+  const autoJoinConnectPromptedRef = useRef(false);
+  const autoOpenedDisputeFor = useRef<string | null>(null);
+  const disputeCooldownLockRef = useRef(0);
 
   const data = matchQuery.data as MatchData | undefined;
   const rawStorage = matchStorageQuery.data as MatchStorageData | undefined;
@@ -199,6 +313,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const proposedWinner = data?.[7];
   const creatorVote = creatorVoteQuery.data as Address | undefined;
   const opponentVote = opponentVoteQuery.data as Address | undefined;
+  const resolvedWinner = resolvedWinnerQuery.data as Address | undefined;
 
   const isCreator = Boolean(address && creator && address.toLowerCase() === creator.toLowerCase());
   const isOpponent = Boolean(address && opponent && address.toLowerCase() === opponent.toLowerCase());
@@ -215,7 +330,14 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     typeof status === "bigint" ? Number(status) : typeof status === "number" ? status : undefined;
   const statusText = typeof statusNum === "number" ? (STATUS[statusNum] ?? `Unknown(${statusNum})`) : "-";
   const matchLoaded = Boolean(data);
-  const canJoin = Boolean(matchExists && !isCreator && statusNum === 0 && !opponentPaid);
+  const opponentIsOpen = !opponent || opponent.toLowerCase() === zeroAddress;
+  const canJoin = Boolean(
+    matchExists &&
+      !isCreator &&
+      statusNum === 0 &&
+      !opponentPaid &&
+      (opponentIsOpen || !isConnected || isOpponent),
+  );
   const autoJoinEligible = Boolean(
     matchExists &&
       !isCreator &&
@@ -255,12 +377,35 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     statusNum === 3 && typeof confirmByRaw === "bigint"
       ? Math.max(0, Math.floor((Number(confirmByRaw) * 1000 - nowMs) / 1000))
       : null;
+  const timeframeParam = searchParams.get("t");
+  const gameParam = searchParams.get("g");
+  const platformParam = searchParams.get("p");
+  const joinParam = searchParams.get("j");
+  const rematchTimeframe = timeframeParam && /^\d+$/.test(timeframeParam) ? timeframeParam : "10";
+  const rematchGame =
+    gameParam === "eFootball" || gameParam === "FC26" || gameParam === "FC25" || gameParam === "Mortal Kombat"
+      ? gameParam
+      : "eFootball";
+  const rematchPlatform =
+    platformParam === "Console" || platformParam === "PC" || platformParam === "Mobile"
+      ? platformParam
+      : "Console";
+  const rematchJoinMins = joinParam && /^\d+$/.test(joinParam) ? joinParam : "30";
+  const rematchOpponent = isCreator ? opponent : isOpponent ? creator : undefined;
   const invitePath = useMemo(() => {
     if (!hasValidRoomCode) return "";
     const params = new URLSearchParams();
-    const timeframeParam = searchParams.get("t");
     if (timeframeParam && /^\d+$/.test(timeframeParam)) {
       params.set("t", timeframeParam);
+    }
+    if (gameParam) {
+      params.set("g", gameParam);
+    }
+    if (platformParam) {
+      params.set("p", platformParam);
+    }
+    if (joinParam && /^\d+$/.test(joinParam)) {
+      params.set("j", joinParam);
     }
     params.set("auto", "1");
     const query = params.toString();
@@ -271,6 +416,102 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   function shortAddress(value?: string) {
     if (!value) return "-";
     return `${value.slice(0, 6)}...${value.slice(-4)}`;
+  }
+
+  const resolvedWinnerLabel = useMemo(() => {
+    const winner = resolvedWinner?.toLowerCase();
+    if (!winner || winner === zeroAddress) return "Refunded";
+    if (creator && winner === creator.toLowerCase()) return "Creator";
+    if (opponent && winner === opponent.toLowerCase()) return "Opponent";
+    return shortAddress(resolvedWinner);
+  }, [resolvedWinner, creator, opponent]);
+
+  async function refreshDisputeEvidence() {
+    if (!hasValidRoomCode) {
+      setDisputeEvidence([]);
+      return;
+    }
+    setDisputeEvidence(await loadDisputeEvidence(matchId.toString()));
+  }
+
+  async function refreshDisputeMessages() {
+    if (!hasValidRoomCode) {
+      setDisputeMessages([]);
+      return;
+    }
+    setDisputeMessages(await loadDisputeMessages(matchId.toString()));
+  }
+
+  async function onEvidenceFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setEvidenceError("Only image files are allowed.");
+      setEvidenceAttachment(null);
+      return;
+    }
+    if (file.size > MAX_EVIDENCE_BYTES) {
+      setEvidenceError("File is too large. Compress file and upload again.");
+      setEvidenceAttachment(null);
+      return;
+    }
+    setEvidenceError(null);
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        setEvidenceError("Failed to read image.");
+        setEvidenceAttachment(null);
+        return;
+      }
+      setEvidenceAttachment({
+        name: file.name,
+        sizeBytes: file.size,
+        mimeType: file.type,
+        dataUrl: reader.result,
+      });
+    };
+    reader.onerror = () => setEvidenceError("Failed to read image.");
+    reader.readAsDataURL(file);
+    event.target.value = "";
+  }
+
+  async function uploadDisputeEvidence() {
+    if (!address) {
+      setEvidenceError("Connect wallet to upload evidence.");
+      return;
+    }
+    if (statusNum !== 4) {
+      setEvidenceError("Evidence upload is available only while dispute is active.");
+      return;
+    }
+    if (!evidenceAttachment) {
+      setEvidenceError("Select an image first.");
+      return;
+    }
+    if (evidenceAttachment.sizeBytes < MIN_EVIDENCE_BYTES) {
+      setEvidenceError("Evidence file looks too small. Upload a clear, real match screenshot.");
+      return;
+    }
+    if (evidenceNote.trim().length < EVIDENCE_NOTE_MIN_LENGTH) {
+      setEvidenceError("Add a short evidence note (at least 12 characters).");
+      return;
+    }
+    try {
+      await appendDisputeEvidence(matchId.toString(), {
+        uploader: address,
+        note: evidenceNote.trim(),
+        imageDataUrl: evidenceAttachment.dataUrl,
+        attachmentName: evidenceAttachment.name,
+        attachmentSizeBytes: evidenceAttachment.sizeBytes,
+        attachmentMimeType: evidenceAttachment.mimeType,
+      });
+      setEvidenceAttachment(null);
+      setEvidenceNote("");
+      setEvidenceError(null);
+      await refreshDisputeEvidence();
+    } catch (error: any) {
+      setEvidenceError(error?.message || "Failed to upload evidence.");
+    }
   }
 
   async function copyRoomCodeValue() {
@@ -297,24 +538,6 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     }
   }
 
-  const rematchHref = useMemo(() => {
-    if (typeof stakeValue !== "bigint") return "/matches/create";
-
-    const params = new URLSearchParams();
-    params.set("stake", formatEther(stakeValue));
-
-    const timeframeParam = searchParams.get("t");
-    if (timeframeParam && /^\d+$/.test(timeframeParam)) {
-      params.set("timeframe", timeframeParam);
-    }
-
-    const rematchOpponent = isCreator ? opponent : isOpponent ? creator : undefined;
-    if (rematchOpponent && rematchOpponent.toLowerCase() !== zeroAddress) {
-      params.set("opponent", rematchOpponent);
-    }
-
-    return `/matches/create?${params.toString()}`;
-  }, [stakeValue, searchParams, isCreator, isOpponent, opponent, creator]);
   const showPostMatchActions = Boolean(statusNum === 5 && isPlayer);
 
   async function runTx(
@@ -337,12 +560,208 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     }
   }
 
-  async function writeWithNonce(config: WriteConfig) {
-    if (!publicClient || !address) {
-      return writeContractAsync(config as Parameters<typeof writeContractAsync>[0]);
+  async function refreshRematchIntent() {
+    if (!hasValidRoomCode) {
+      setRematchIntent(null);
+      return;
     }
-    const nonce = Number(await publicClient.getTransactionCount({ address, blockTag: "latest" }));
-    return writeContractAsync({ ...config, nonce } as Parameters<typeof writeContractAsync>[0]);
+    try {
+      const response = await fetch(`/api/rematch/${encodeURIComponent(matchId.toString())}`, { cache: "no-store" });
+      if (!response.ok) return;
+      const payload = (await response.json()) as { item?: RematchIntent | null };
+      setRematchIntent(payload.item ?? null);
+    } catch {
+      // ignore rematch intent poll errors
+    }
+  }
+
+  function extractCreatedMatchIdFromReceipt(receipt: any): bigint | null {
+    const escrowAddrLower = escrowAddress?.toLowerCase();
+    if (!escrowAddrLower) return null;
+    for (const log of receipt.logs ?? []) {
+      if (!log?.address || String(log.address).toLowerCase() !== escrowAddrLower) continue;
+      try {
+        const decoded = decodeEventLog({
+          abi: escrowAbi,
+          data: log.data,
+          topics: log.topics,
+        });
+        if (decoded.eventName === "MatchCreated") {
+          const value = decoded.args.matchId;
+          if (typeof value === "bigint") return value;
+        }
+      } catch {
+        // skip non-matching logs
+      }
+    }
+    return null;
+  }
+
+  async function resolveCreatedMatchId(
+    hash: `0x${string}`,
+    expectedId: bigint | null,
+  ): Promise<bigint | null> {
+    if (!publicClient) return null;
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < REMATCH_RECEIPT_WAIT_TIMEOUT_MS) {
+      let receipt: Awaited<ReturnType<typeof publicClient.getTransactionReceipt>> | null = null;
+      try {
+        receipt = await publicClient.getTransactionReceipt({ hash });
+      } catch {
+        receipt = null;
+      }
+      if (receipt) {
+        if (receipt.status === "reverted") {
+          throw new Error("Rematch transaction reverted on-chain.");
+        }
+        const fromEvent = extractCreatedMatchIdFromReceipt(receipt);
+        if (fromEvent !== null) return fromEvent;
+        if (expectedId !== null) return expectedId;
+      }
+      await new Promise((resolve) => setTimeout(resolve, REMATCH_RECEIPT_POLL_INTERVAL_MS));
+    }
+
+    if (expectedId !== null) {
+      try {
+        const nextId = await publicClient.readContract({
+          address: escrowAddress!,
+          abi: escrowAbi,
+          functionName: "nextMatchId",
+          args: [],
+        });
+        if (typeof nextId === "bigint" && nextId > expectedId) {
+          return expectedId;
+        }
+      } catch {
+        // ignore fallback polling error
+      }
+    }
+    return null;
+  }
+
+  async function startRematchSameStake() {
+    if (isRematching) return;
+    if (!escrowAddress || !publicClient || !stakeValue || !isPlayer || statusNum !== 5) return;
+    if (!rematchOpponent || rematchOpponent.toLowerCase() === zeroAddress) {
+      setErr("Rematch unavailable: opponent wallet missing.");
+      return;
+    }
+    if (!isConnected) {
+      openConnectRef.current?.();
+      return;
+    }
+
+    setErr(null);
+    setIsRematching(true);
+    setRematchStatusText("Preparing rematch settings...");
+    try {
+      const nextId = await publicClient.readContract({
+        address: escrowAddress,
+        abi: escrowAbi,
+        functionName: "nextMatchId",
+        args: [],
+      });
+      const expectedId = typeof nextId === "bigint" ? nextId : null;
+      const joinBySeconds = BigInt(Math.max(1, Number(rematchJoinMins || "30"))) * 60n;
+      const confirmBySeconds = BigInt(Math.max(1, Number(rematchTimeframe || "10"))) * 60n;
+
+      setRematchStatusText("Waiting for wallet confirmation...");
+      const hash = await writeWithNonce({
+        address: escrowAddress,
+        abi: escrowAbi,
+        functionName: "createMatch",
+        args: [rematchOpponent, stakeValue, joinBySeconds, confirmBySeconds] as const,
+        value: stakeValue,
+      });
+
+      setTxHash(hash);
+      setRematchStatusText("Transaction submitted. Finalizing rematch room...");
+      const newMatchId = await resolveCreatedMatchId(hash, expectedId);
+      if (newMatchId === null) {
+        throw new Error("Rematch tx submitted but new room code is still pending. Try again in a few seconds.");
+      }
+
+      const newRoomCode = encodeMatchCode(newMatchId);
+      const requestedByRole: "creator" | "opponent" = isCreator ? "creator" : "opponent";
+      const oldMatchId = matchId.toString();
+
+      await fetch(`/api/rematch/${encodeURIComponent(oldMatchId)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "create",
+          intent: {
+            newMatchId: newMatchId.toString(),
+            newRoomCode,
+            requestedBy: address?.toLowerCase() ?? "",
+            requestedByRole,
+            creator: (creator ?? "").toLowerCase(),
+            opponent: (opponent ?? "").toLowerCase(),
+            stake: formatEther(stakeValue),
+            timeframe: rematchTimeframe,
+            joinMins: rematchJoinMins,
+            game: rematchGame,
+            platform: rematchPlatform,
+          },
+        }),
+      });
+
+      const nextParams = new URLSearchParams();
+      nextParams.set("t", rematchTimeframe);
+      nextParams.set("g", rematchGame);
+      nextParams.set("p", rematchPlatform);
+      nextParams.set("j", rematchJoinMins);
+      nextParams.set("rematchOf", oldMatchId);
+      nextParams.set("rematchBy", requestedByRole);
+      router.push(`/matches/${encodeURIComponent(newRoomCode)}?${nextParams.toString()}`);
+    } catch (e: any) {
+      setErr(e?.shortMessage || e?.message || String(e));
+    } finally {
+      setIsRematching(false);
+      setRematchStatusText("");
+    }
+  }
+
+  async function joinRequestedRematch() {
+    if (!rematchIntent) return;
+    if (isConnected && address) {
+      await fetch(`/api/rematch/${encodeURIComponent(matchId.toString())}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "join", actor: address.toLowerCase() }),
+      }).catch(() => undefined);
+    }
+    const params = new URLSearchParams();
+    params.set("auto", "1");
+    params.set("t", rematchIntent.timeframe);
+    params.set("g", rematchIntent.game);
+    params.set("p", rematchIntent.platform);
+    params.set("j", rematchIntent.joinMins);
+    params.set("rematchOf", rematchIntent.oldMatchId);
+    router.push(`/matches/${encodeURIComponent(rematchIntent.newRoomCode)}?${params.toString()}`);
+  }
+
+  async function cancelRequestedRematch() {
+    if (!rematchIntent) return;
+    await fetch(`/api/rematch/${encodeURIComponent(matchId.toString())}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "cancel", actor: address?.toLowerCase() ?? "" }),
+    }).catch(() => undefined);
+    await refreshRematchIntent();
+  }
+
+  async function writeWithNonce(config: WriteConfig) {
+    if (publicClient && address) {
+      const [latestNonce, pendingNonce] = await Promise.all([
+        publicClient.getTransactionCount({ address, blockTag: "latest" }),
+        publicClient.getTransactionCount({ address, blockTag: "pending" }),
+      ]);
+      if (pendingNonce > latestNonce) {
+        throw new Error("You have a pending wallet transaction. In MetaMask, Speed Up or Cancel it first.");
+      }
+    }
+    return writeContractAsync(config as Parameters<typeof writeContractAsync>[0]);
   }
 
   async function loadWalletHistories() {
@@ -361,6 +780,49 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     setHistoryError(null);
 
     try {
+      try {
+        const response = await fetch(
+          `/api/reputation?chainId=${chainId}&wallets=${encodeURIComponent(trackedWallets.join(","))}`,
+          { cache: "no-store" },
+        );
+        if (response.ok) {
+          const payload = (await response.json()) as {
+            items?: Record<
+              string,
+              {
+                wins: number;
+                losses: number;
+                resolved: number;
+                disputes: number;
+                noResponseFlags: number;
+                entries: HistoryEntry[];
+              }
+            >;
+          };
+          const cached = payload.items ?? {};
+          const hasAllWallets = trackedWallets.every((wallet) => Boolean(cached[wallet]));
+          if (hasAllWallets) {
+            const builtFromCache: Record<string, WalletHistory> = {};
+            for (const wallet of trackedWallets) {
+              const row = cached[wallet];
+              builtFromCache[wallet] = {
+                wins: Number(row.wins || 0),
+                losses: Number(row.losses || 0),
+                resolved: Number(row.resolved || 0),
+                disputes: Number(row.disputes || 0),
+                noResponseFlags: Number(row.noResponseFlags || 0),
+                entries: Array.isArray(row.entries) ? row.entries.slice(0, 6) : [],
+              };
+            }
+            setHistoryByWallet(builtFromCache);
+            setHistoryLoading(false);
+            return;
+          }
+        }
+      } catch {
+        // Continue to on-chain rebuild if backend cache misses/fails.
+      }
+
       const nextMatchId = await publicClient.readContract({
         address: escrowAddress,
         abi: escrowAbi,
@@ -470,6 +932,14 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
       }
 
       setHistoryByWallet(built);
+      void fetch("/api/reputation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chainId,
+          byWallet: built,
+        }),
+      });
     } catch (error: any) {
       setHistoryError(error?.shortMessage || error?.message || String(error));
     } finally {
@@ -506,6 +976,12 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
 
   function submitDispute() {
     if (!canAct) return;
+    const now = Date.now();
+    if (now < disputeCooldownLockRef.current) return;
+    const until = now + DISPUTE_CLICK_COOLDOWN_MS;
+    disputeCooldownLockRef.current = until;
+    setDisputeCooldownUntilMs(until);
+    setDisputeCooldownNowMs(now);
     runTx(
       () =>
         writeWithNonce({
@@ -517,6 +993,31 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
       () => {
         setShowDisputeConfirm(false);
         setShowAwaitingOpponent(false);
+        const starterRole = isCreator ? "creator" : isOpponent ? "opponent" : "unknown";
+        void ensureDisputeAutoMessage(matchId.toString(), starterRole);
+        void refreshDisputeMessages();
+      },
+    );
+  }
+
+  function openDisputeConfirm() {
+    if (!canAct || disputeCooldownActive) return;
+    setShowDisputeConfirm(true);
+  }
+
+  function submitConcedeDispute() {
+    if (!canAct || !isPlayer || statusNum !== 4) return;
+    runTx(
+      () =>
+        writeWithNonce({
+          address: escrowAddress!,
+          abi: escrowAbi,
+          functionName: "concedeDispute",
+          args: [matchId],
+        }),
+      () => {
+        setShowConcedeDisputeConfirm(false);
+        setShowDisputePanel(false);
       },
     );
   }
@@ -526,6 +1027,11 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     (statusNum === 2 || statusNum === 3 || statusNum === 4) && cancelCountdown === 0,
   );
   const canShowDispute = Boolean(canAct && canDeclare && matchStarted);
+  const disputeCooldownRemainingSec =
+    disputeCooldownUntilMs === null
+      ? 0
+      : Math.max(0, Math.ceil((disputeCooldownUntilMs - disputeCooldownNowMs) / 1000));
+  const disputeCooldownActive = disputeCooldownRemainingSec > 0;
   const canCancelCreated = Boolean(canAct && isCreator && statusNum === 0);
   const canCancelGrace = Boolean(
     canAct &&
@@ -541,11 +1047,42 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     hasValidRoomCode &&
       matchExists &&
       !isPlayer &&
-      (statusNum !== 0 || opponentPaid || (opponent && opponent.toLowerCase() !== zeroAddress)),
+      (statusNum !== 0 || opponentPaid || (!opponentIsOpen && isConnected)),
   );
+  const canViewDispute = Boolean(statusNum === 4);
   const walletBalanceText = walletBalanceQuery.data
     ? Number(walletBalanceQuery.data.formatted).toLocaleString(undefined, { maximumFractionDigits: 6 })
     : "-";
+  const historyRows = useMemo(
+    () =>
+      [creator, opponent]
+        .filter((wallet): wallet is Address => Boolean(wallet && wallet.toLowerCase() !== zeroAddress))
+        .map((wallet) => {
+          const key = wallet.toLowerCase();
+          const history = historyByWallet[key] ?? {
+            wins: 0,
+            losses: 0,
+            resolved: 0,
+            disputes: 0,
+            noResponseFlags: 0,
+            entries: [],
+          };
+          const winRate = history.resolved > 0 ? Math.round((history.wins / history.resolved) * 100) : 0;
+          const role =
+            wallet.toLowerCase() === creator?.toLowerCase()
+              ? "Creator"
+              : wallet.toLowerCase() === opponent?.toLowerCase()
+                ? "Opponent"
+                : "Player";
+          return {
+            wallet,
+            role,
+            history,
+            winRate,
+          };
+        }),
+    [creator, opponent, historyByWallet],
+  );
 
   useEffect(() => {
     if ((statusNum === 1 || statusNum === 2) && opponent) {
@@ -557,7 +1094,8 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   }, [statusNum, opponent]);
 
   useEffect(() => {
-    if (statusNum !== 3 || typeof confirmByRaw !== "bigint") return;
+    if (statusNum !== 3 && statusNum !== 4) return;
+    if (statusNum === 3 && typeof confirmByRaw !== "bigint") return;
     const timer = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [statusNum, confirmByRaw]);
@@ -591,6 +1129,139 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     }
   }, [statusNum, isOutcomeSubmitting]);
 
+  useEffect(() => {
+    if (!canViewDispute) {
+      setShowDisputePanel(false);
+    }
+    void refreshDisputeEvidence();
+    void refreshDisputeMessages();
+  }, [canViewDispute, matchId, txHash]);
+
+  useEffect(() => {
+    if (!hasValidRoomCode) return;
+    if (statusNum !== 4) return;
+    const key = matchId.toString();
+    void ensureDisputeAutoMessage(key);
+    if (autoOpenedDisputeFor.current === key) return;
+    autoOpenedDisputeFor.current = key;
+    void refreshDisputeEvidence();
+    void refreshDisputeMessages();
+    setShowDisputePanel(true);
+  }, [statusNum, hasValidRoomCode, matchId]);
+
+  useEffect(() => {
+    if (!hasValidRoomCode) return;
+    if (statusNum !== 5) return;
+    void refreshDisputeMessages();
+    const intervalId = window.setInterval(() => {
+      void refreshDisputeMessages();
+    }, 5000);
+    const stopId = window.setTimeout(() => window.clearInterval(intervalId), 30000);
+    return () => {
+      window.clearInterval(intervalId);
+      window.clearTimeout(stopId);
+    };
+  }, [statusNum, hasValidRoomCode, matchId]);
+
+  useEffect(() => {
+    if (!hasValidRoomCode) return;
+    const key = `dispute-messages:${matchId.toString()}`;
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === key) {
+        void refreshDisputeMessages();
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    const intervalId = window.setInterval(() => {
+      if (statusNum === 4) {
+        void refreshDisputeMessages();
+        void refreshDisputeEvidence();
+      }
+    }, 5000);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.clearInterval(intervalId);
+    };
+  }, [hasValidRoomCode, matchId, statusNum]);
+
+  useEffect(() => {
+    if (!disputeCooldownActive) return;
+    const timer = window.setInterval(() => setDisputeCooldownNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [disputeCooldownActive]);
+
+  useEffect(() => {
+    if (!disputeCooldownUntilMs) return;
+    if (disputeCooldownRemainingSec > 0) return;
+    setDisputeCooldownUntilMs(null);
+    disputeCooldownLockRef.current = 0;
+  }, [disputeCooldownUntilMs, disputeCooldownRemainingSec]);
+
+  useEffect(() => {
+    if (statusNum !== 4) return;
+    setDisputeCooldownUntilMs(null);
+    disputeCooldownLockRef.current = 0;
+    setShowDisputeConfirm(false);
+  }, [statusNum]);
+
+  const disputeIntroMessage = useMemo(
+    () => disputeMessages.find((message) => message.senderRole === "system") ?? null,
+    [disputeMessages],
+  );
+  const adminResolutionMessage = useMemo(
+    () =>
+      [...disputeMessages]
+        .reverse()
+        .find(
+          (message) =>
+            message.senderRole === "system" &&
+            message.message.trim().toLowerCase().startsWith("dispute resolved by admin"),
+        ) ?? null,
+    [disputeMessages],
+  );
+  const adminResolvedTargetLabel = useMemo(() => {
+    if (!adminResolutionMessage) return null;
+    const winner = resolvedWinner?.toLowerCase();
+    if (!winner || winner === zeroAddress) return "both players (refund)";
+    if (creator && winner === creator.toLowerCase()) return "creator";
+    if (opponent && winner === opponent.toLowerCase()) return "opponent";
+    return shortAddress(resolvedWinner);
+  }, [adminResolutionMessage, resolvedWinner, creator, opponent]);
+  const rematchPendingForCounterparty = Boolean(
+    statusNum === 5 &&
+      rematchIntent &&
+      rematchIntent.status === "pending" &&
+      address &&
+      address.toLowerCase() !== rematchIntent.requestedBy.toLowerCase(),
+  );
+  const rematchPendingForRequester = Boolean(
+    statusNum === 5 &&
+      rematchIntent &&
+      rematchIntent.status === "pending" &&
+      address &&
+      address.toLowerCase() === rematchIntent.requestedBy.toLowerCase(),
+  );
+  const disputeStartedAtMs = disputeIntroMessage?.createdAt ?? null;
+  const disputeElapsedMs = disputeStartedAtMs ? Math.max(0, nowMs - disputeStartedAtMs) : 0;
+  const evidenceWindowRemainingSec = disputeStartedAtMs
+    ? Math.max(0, Math.floor((10 * 60 * 1000 - disputeElapsedMs) / 1000))
+    : null;
+  const policyWindowRemainingSec = disputeStartedAtMs
+    ? Math.max(0, Math.floor((30 * 60 * 1000 - disputeElapsedMs) / 1000))
+    : null;
+  const creatorEvidenceCount = disputeEvidence.filter(
+    (item) => creator && item.uploader.toLowerCase() === creator.toLowerCase(),
+  ).length;
+  const opponentEvidenceCount = disputeEvidence.filter(
+    (item) => opponent && item.uploader.toLowerCase() === opponent.toLowerCase(),
+  ).length;
+  const policyWinnerLabel = useMemo(() => {
+    if (policyWindowRemainingSec !== 0) return null;
+    if (creatorEvidenceCount > 0 && opponentEvidenceCount === 0) return "Creator";
+    if (opponentEvidenceCount > 0 && creatorEvidenceCount === 0) return "Opponent";
+    return null;
+  }, [policyWindowRemainingSec, creatorEvidenceCount, opponentEvidenceCount]);
+
   async function joinAndLockStake() {
     if (!stakeValue || !escrowAddress) return;
     await runTx(() =>
@@ -606,6 +1277,10 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
 
   function handleJoinClick() {
     if (!canJoin || typeof stake !== "bigint") return;
+    if (isConnected && !opponentIsOpen && !isOpponent) {
+      setErr(`This match is reserved for opponent wallet ${shortAddress(opponent)}.`);
+      return;
+    }
     if (!isConnected) {
       setJoinAfterConnect(true);
       openConnectRef.current?.();
@@ -631,6 +1306,25 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     setAutoJoinTriggered(true);
     joinAndLockStake();
   }, [autoJoinRequested, autoJoinEligible, isConnected, autoJoinTriggered]);
+
+  useEffect(() => {
+    if (!autoJoinRequested || isConnected) return;
+    if (autoJoinConnectPromptedRef.current) return;
+    autoJoinConnectPromptedRef.current = true;
+    openConnectRef.current?.();
+  }, [autoJoinRequested, isConnected]);
+
+  useEffect(() => {
+    if (!hasValidRoomCode || !isPlayer || statusNum !== 5) {
+      setRematchIntent(null);
+      return;
+    }
+    void refreshRematchIntent();
+    const intervalId = window.setInterval(() => {
+      void refreshRematchIntent();
+    }, 4000);
+    return () => window.clearInterval(intervalId);
+  }, [hasValidRoomCode, isPlayer, statusNum, matchId, txHash]);
 
   useEffect(() => {
     if (!creator || creator.toLowerCase() === zeroAddress) return;
@@ -668,7 +1362,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
               <span className="h-2 w-2 rounded-full bg-sky-500 animate-pulse" />
               Match Protocol
             </div>
-            <h1 className="text-3xl font-black uppercase italic tracking-tighter text-white sm:text-4xl">
+            <h1 className="text-2xl font-black uppercase italic tracking-tighter text-white sm:text-4xl">
               Match Room{" "}
               <span className="text-transparent bg-clip-text bg-gradient-to-r from-sky-500 to-sky-200">
                 #{hasValidRoomCode ? roomCode : id}
@@ -703,7 +1397,12 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
 
         {!escrowAddress && (
           <div className="mb-6 border border-red-500/20 bg-red-500/10 p-4 text-red-400 font-mono text-sm">
-            Missing NEXT_PUBLIC_MATCH_ESCROW_ADDRESS in apps/web/.env.local
+            Escrow address not configured for this chain.
+          </div>
+        )}
+        {!chainSupported && (
+          <div className="mb-6 border border-red-500/20 bg-red-500/10 p-4 text-red-400 font-mono text-sm">
+            Unsupported network. Switch wallet to one of: {getSupportedChainNames()}.
           </div>
         )}
 
@@ -720,9 +1419,9 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
             {/* Status Banner */}
             <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/10 via-white/5 to-transparent p-[1px] shadow-[0_20px_60px_rgba(0,0,0,0.55)]">
               <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_10%,rgba(56,189,248,0.18),transparent_45%),radial-gradient(circle_at_90%_90%,rgba(59,130,246,0.12),transparent_45%)]" />
-              <div className="relative rounded-[22px] bg-slate-900/90 p-6 backdrop-blur-xl">
+              <div className="relative rounded-[22px] bg-slate-900/90 p-4 backdrop-blur-xl sm:p-6">
                 <div className="text-xs font-bold uppercase tracking-widest text-gray-500">Current Status</div>
-                <div className="mt-2 text-3xl font-black uppercase tracking-tight text-white">{statusText}</div>
+                <div className="mt-2 text-2xl font-black uppercase tracking-tight text-white sm:text-3xl">{statusText}</div>
                 {isConnected && (
                   <div className="mt-3 rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-200">
                     Wallet balance:{" "}
@@ -745,8 +1444,13 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                   </div>
                 )}
                 {statusNum === 5 && (
-                  <div className="mt-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs uppercase tracking-widest text-emerald-200">
-                    Match resolved on-chain.
+                  <div className="mt-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+                    <div className="uppercase tracking-widest">Match resolved on-chain. Winner: {resolvedWinnerLabel}</div>
+                    {adminResolutionMessage && (
+                      <div className="mt-1 text-[11px] text-emerald-100/90">
+                        Match has been resolved by admin. Funds were released to {adminResolvedTargetLabel}.
+                      </div>
+                    )}
                   </div>
                 )}
                 {creatorPaid && statusNum === 0 && (
@@ -757,7 +1461,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                 {opponentPaid && totalStakeText && (
                   <div className="mt-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-4">
                     <div className="text-[10px] uppercase tracking-[0.3em] text-emerald-300/80">Possible Win</div>
-                    <div className="mt-1 text-3xl font-black tracking-tight text-emerald-200 sm:text-4xl">
+                    <div className="mt-1 text-2xl font-black tracking-tight text-emerald-200 sm:text-4xl">
                       {totalStakeText} {nativeSymbol}
                     </div>
                     {winnerPayoutText && (
@@ -874,119 +1578,6 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
               </div>
             </div>
 
-            <div className="rounded-3xl border border-white/10 bg-slate-900/90 p-5 backdrop-blur-xl sm:p-6">
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <h3 className="text-sm font-bold uppercase tracking-widest text-gray-400 flex items-center gap-2">
-                  <div className="h-1 w-4 bg-emerald-500" />
-                  Player History
-                </h3>
-                <button
-                  type="button"
-                  className="rounded-xl border border-white/10 bg-white/5 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-gray-300 hover:bg-white/10"
-                  onClick={loadWalletHistories}
-                >
-                  Refresh
-                </button>
-              </div>
-
-              {historyLoading && (
-                <div className="rounded-2xl border border-white/10 bg-black/50 p-3 text-xs text-gray-400">
-                  Loading on-chain history...
-                </div>
-              )}
-              {historyError && (
-                <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-300 break-all">
-                  {historyError}
-                </div>
-              )}
-
-              {!historyLoading && !historyError && (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {[creator, opponent]
-                    .filter((wallet): wallet is Address => Boolean(wallet && wallet.toLowerCase() !== zeroAddress))
-                    .map((wallet) => {
-                      const key = wallet.toLowerCase();
-                      const history = historyByWallet[key] ?? {
-                        wins: 0,
-                        losses: 0,
-                        resolved: 0,
-                        disputes: 0,
-                        noResponseFlags: 0,
-                        entries: [],
-                      };
-                      const winRate =
-                        history.resolved > 0
-                          ? Math.round((history.wins / history.resolved) * 100)
-                          : 0;
-                      return (
-                        <div key={wallet} className="rounded-2xl border border-white/10 bg-black/40 p-4">
-                          <div className="text-[10px] uppercase tracking-[0.3em] text-gray-500">
-                            {wallet.toLowerCase() === creator?.toLowerCase()
-                              ? "Creator"
-                              : wallet.toLowerCase() === opponent?.toLowerCase()
-                              ? "Opponent"
-                              : "Player"}
-                          </div>
-                          <div className="mt-1 font-mono text-sm text-sky-300">{shortAddress(wallet)}</div>
-                          <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-                            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-2 py-2 text-center text-emerald-200">
-                              <div className="text-[10px] uppercase tracking-widest text-emerald-300/80">Wins</div>
-                              <div className="mt-1 text-base font-bold">{history.wins}</div>
-                            </div>
-                            <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-2 py-2 text-center text-red-200">
-                              <div className="text-[10px] uppercase tracking-widest text-red-300/80">Losses</div>
-                              <div className="mt-1 text-base font-bold">{history.losses}</div>
-                            </div>
-                            <div className="rounded-xl border border-sky-500/30 bg-sky-500/10 px-2 py-2 text-center text-sky-200">
-                              <div className="text-[10px] uppercase tracking-widest text-sky-300/80">Win%</div>
-                              <div className="mt-1 text-base font-bold">{winRate}%</div>
-                            </div>
-                          </div>
-                          <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-                            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-2 py-2 text-center text-amber-200">
-                              <div className="text-[10px] uppercase tracking-widest text-amber-300/80">Disputes</div>
-                              <div className="mt-1 text-base font-bold">{history.disputes}</div>
-                            </div>
-                            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-2 py-2 text-center text-rose-200">
-                              <div className="text-[10px] uppercase tracking-widest text-rose-300/80">No-Response</div>
-                              <div className="mt-1 text-base font-bold">{history.noResponseFlags}</div>
-                            </div>
-                          </div>
-                          <div className="mt-2 text-[11px] text-gray-500">
-                            No-response flags indicate matches where opponent acted but this player never submitted any outcome.
-                          </div>
-                          <div className="mt-3 space-y-1">
-                            {history.entries.length === 0 && (
-                              <div className="text-[11px] text-gray-500">No previous matches found.</div>
-                            )}
-                            {history.entries.map((entry) => (
-                              <div
-                                key={`${wallet}-${entry.matchId}-${entry.opponent}`}
-                                className="flex items-center justify-between rounded-xl border border-white/5 bg-black/40 px-2 py-1.5 text-[11px]"
-                              >
-                                <span className="text-gray-400">#{entry.matchId} vs {shortAddress(entry.opponent)}</span>
-                                <span
-                                  className={
-                                    entry.result === "Win"
-                                      ? "text-emerald-300"
-                                      : entry.result === "Loss"
-                                      ? "text-red-300"
-                                      : entry.result === "Disputed"
-                                      ? "text-amber-300"
-                                      : "text-gray-400"
-                                  }
-                                >
-                                  {entry.result}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    })}
-                </div>
-              )}
-            </div>
           </div>
 
           {/* Right Column: Actions */}
@@ -1063,10 +1654,12 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                         </button>
                         <button
                           className="rounded-2xl border border-red-500/40 bg-red-500/20 p-3 text-xs font-bold uppercase tracking-wider text-red-100 transition-all hover:bg-red-500/30 disabled:opacity-20"
-                          disabled={!canAct}
-                          onClick={() => setShowDisputeConfirm(true)}
+                          disabled={!canAct || disputeCooldownActive}
+                          onClick={openDisputeConfirm}
                         >
-                          Cancel To Dispute
+                          {disputeCooldownActive
+                            ? `Dispute Started Already (${disputeCooldownRemainingSec}s)`
+                            : "Cancel To Dispute"}
                         </button>
                       </div>
                     </div>
@@ -1076,10 +1669,12 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                   {canShowDispute && (
                     <button
                       className="rounded-2xl border border-red-500/30 bg-slate-700/20 p-3 font-bold uppercase tracking-wider text-red-500 transition-all hover:bg-red-900/20 disabled:opacity-20"
-                      disabled={!canAct}
-                      onClick={() => setShowDisputeConfirm(true)}
+                      disabled={!canAct || disputeCooldownActive}
+                      onClick={openDisputeConfirm}
                     >
-                      Dispute
+                      {disputeCooldownActive
+                        ? `Dispute Started Already (${disputeCooldownRemainingSec}s)`
+                        : "Dispute"}
                     </button>
                   )}
                   <button
@@ -1103,9 +1698,35 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                       Both players can cancel for 60s after an opponent joins. After that, escrow is locked.
                     </p>
                   )}
+                  {disputeCooldownActive && (
+                    <p className="text-[11px] text-amber-300/90">
+                      Dispute started already. Please wait {disputeCooldownRemainingSec}s before trying again.
+                    </p>
+                  )}
                   {(statusNum === 2 || statusNum === 3) && cancelCountdown !== null && cancelCountdown > 0 && (
                     <div className="rounded-2xl border border-white/10 bg-black/50 p-3 text-xs text-gray-400">
                       Outcome controls unlock after the 60-second grace period. Time left: {cancelCountdown}s.
+                    </div>
+                  )}
+                  {canViewDispute && (
+                    <div className="rounded-2xl border border-amber-500/35 bg-amber-500/10 p-4">
+                      <div className="text-[10px] uppercase tracking-[0.35em] text-amber-300/80">
+                        Dispute Center
+                      </div>
+                      <p className="mt-2 text-xs text-amber-100/90">
+                        Dispute is active. Players can open dispute now and upload evidence later.
+                      </p>
+                      <button
+                        type="button"
+                        className="mt-3 w-full rounded-2xl border border-amber-500/40 bg-amber-500/15 p-3 text-xs font-bold uppercase tracking-wider text-amber-100 transition hover:bg-amber-500/25"
+                        onClick={() => {
+                          void refreshDisputeEvidence();
+                          void refreshDisputeMessages();
+                          setShowDisputePanel(true);
+                        }}
+                      >
+                        View Dispute
+                      </button>
                     </div>
                   )}
                 </div>
@@ -1161,13 +1782,47 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                 {showPostMatchActions && (
                   <div className="mt-6 border-t border-white/10 pt-4">
                     <div className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3">Next Match</div>
+                    {rematchPendingForCounterparty && rematchIntent && (
+                      <div className="mb-3 rounded-2xl border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-sky-100">
+                        {rematchIntent.requestedByRole === "creator" ? "Creator" : "Opponent"} clicked rematch same
+                        stake. Join the new room or cancel this request.
+                        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <button
+                            type="button"
+                            className="rounded-xl border border-sky-500/40 bg-sky-500/25 px-3 py-2 font-bold uppercase tracking-wider text-sky-50"
+                            onClick={() => void joinRequestedRematch()}
+                          >
+                            Join Rematch
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 font-bold uppercase tracking-wider text-white"
+                            onClick={() => void cancelRequestedRematch()}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {rematchPendingForRequester && rematchIntent && (
+                      <div className="mb-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-100">
+                        Rematch request sent. Waiting for opponent to join room #{rematchIntent.newRoomCode}.
+                      </div>
+                    )}
+                    {statusNum === 5 && rematchIntent?.status === "cancelled" && (
+                      <div className="mb-3 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">
+                        Rematch request was cancelled.
+                      </div>
+                    )}
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <Link
-                        href={rematchHref}
-                        className="rounded-2xl border border-emerald-500/40 bg-emerald-500/20 p-3 text-center text-xs font-bold uppercase tracking-wider text-emerald-100 transition hover:bg-emerald-500/30"
+                      <button
+                        type="button"
+                        onClick={() => void startRematchSameStake()}
+                        disabled={isRematching || !isPlayer || !stakeValue || !rematchOpponent}
+                        className="rounded-2xl border border-emerald-500/40 bg-emerald-500/20 p-3 text-center text-xs font-bold uppercase tracking-wider text-emerald-100 transition hover:bg-emerald-500/30 disabled:opacity-40"
                       >
                         Rematch Same Stake
-                      </Link>
+                      </button>
                       <Link
                         href="/matches/create"
                         className="rounded-2xl border border-white/20 bg-white/5 p-3 text-center text-xs font-bold uppercase tracking-wider text-white transition hover:bg-white/10"
@@ -1192,7 +1847,331 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
             </div>
           </div>
         </div>
+
+        <div className="mt-8 rounded-3xl border border-white/10 bg-slate-900/90 p-5 backdrop-blur-xl sm:p-6">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-bold uppercase tracking-widest text-gray-400 flex items-center gap-2">
+              <div className="h-1 w-4 bg-emerald-500" />
+              Player History
+            </h3>
+            <button
+              type="button"
+              className="rounded-xl border border-white/10 bg-white/5 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-gray-300 hover:bg-white/10"
+              onClick={loadWalletHistories}
+            >
+              Refresh
+            </button>
+          </div>
+
+          {historyLoading && (
+            <div className="rounded-2xl border border-white/10 bg-black/50 p-3 text-xs text-gray-400">
+              Loading on-chain history...
+            </div>
+          )}
+          {historyError && (
+            <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-300 break-all">
+              {historyError}
+            </div>
+          )}
+
+          {!historyLoading && !historyError && (
+            <>
+              <div className="overflow-x-auto rounded-2xl border border-white/10 bg-black/40">
+                <table className="min-w-[920px] text-xs">
+                  <thead className="text-[10px] uppercase tracking-[0.2em] text-gray-500">
+                    <tr className="border-b border-white/10">
+                      <th className="px-3 py-3 text-left">Role</th>
+                      <th className="px-3 py-3 text-left">Wallet</th>
+                      <th className="px-3 py-3 text-center">Wins</th>
+                      <th className="px-3 py-3 text-center">Losses</th>
+                      <th className="px-3 py-3 text-center">Win%</th>
+                      <th className="px-3 py-3 text-center">Resolved</th>
+                      <th className="px-3 py-3 text-center">Disputes</th>
+                      <th className="px-3 py-3 text-center">No-Response</th>
+                      <th className="px-3 py-3 text-left">Recent Matches</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {historyRows.length === 0 && (
+                      <tr>
+                        <td colSpan={10} className="px-3 py-5 text-center text-gray-500">
+                          No player history available yet.
+                        </td>
+                      </tr>
+                    )}
+                    {historyRows.map((row) => (
+                      <tr
+                        key={row.wallet}
+                        className="border-b border-white/5 last:border-b-0 hover:bg-white/[0.03]"
+                      >
+                        <td className="px-3 py-3">
+                          <span className="rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[10px] uppercase tracking-wider text-sky-200">
+                            {row.role}
+                          </span>
+                        </td>
+                        <td className="px-3 py-3 font-mono text-sky-300">
+                          <div className="hidden sm:block">{row.wallet}</div>
+                          <div className="sm:hidden">{shortAddress(row.wallet)}</div>
+                        </td>
+                        <td className="px-3 py-3 text-center text-emerald-300 font-semibold">{row.history.wins}</td>
+                        <td className="px-3 py-3 text-center text-red-300 font-semibold">{row.history.losses}</td>
+                        <td className="px-3 py-3 text-center text-sky-200 font-semibold">{row.winRate}%</td>
+                        <td className="px-3 py-3 text-center text-gray-200">{row.history.resolved}</td>
+                        <td className="px-3 py-3 text-center text-amber-300">{row.history.disputes}</td>
+                        <td className="px-3 py-3 text-center text-rose-300">{row.history.noResponseFlags}</td>
+                        <td className="px-3 py-3">
+                          <div className="flex flex-wrap gap-1.5">
+                            {row.history.entries.length === 0 && (
+                              <span className="text-[11px] text-gray-500">No recent matches</span>
+                            )}
+                            {row.history.entries.slice(0, 4).map((entry) => (
+                              <span
+                                key={`${row.wallet}-${entry.matchId}-${entry.opponent}`}
+                                className={
+                                  entry.result === "Win"
+                                    ? "rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-200"
+                                    : entry.result === "Loss"
+                                      ? "rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-[10px] text-red-200"
+                                      : entry.result === "Disputed"
+                                        ? "rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-200"
+                                        : "rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[10px] text-gray-300"
+                                }
+                              >
+                                #{entry.matchId} {entry.result}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-3 text-[11px] text-gray-500">
+                No-response flags indicate matches where opponent acted but this player never submitted any outcome.
+              </p>
+            </>
+          )}
+        </div>
       </div>
+
+      {showDisputePanel && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4"
+          onClick={() => setShowDisputePanel(false)}
+        >
+          <div
+            className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl border border-white/10 bg-slate-900/95 p-5 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl sm:p-6"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.35em] text-amber-300/80">Dispute Center</div>
+                <h3 className="mt-1 text-2xl font-semibold text-white">Match #{roomCode}</h3>
+              </div>
+              <button
+                type="button"
+                className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-white/10"
+                onClick={() => setShowDisputePanel(false)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <div className="rounded-2xl border border-white/10 bg-black/40 p-3 text-xs text-gray-300">
+                Upload score screenshots or final game result evidence for admin review.
+              </div>
+
+              <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3">
+                <div className="text-[10px] uppercase tracking-[0.35em] text-amber-300/80">
+                  Dispute Policy Window
+                </div>
+                <div className="mt-2 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                  <div className="rounded-xl border border-white/10 bg-black/40 p-2">
+                    Evidence upload priority: <span className="text-amber-200">{formatCountdown(evidenceWindowRemainingSec)}</span>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-black/40 p-2">
+                    30m policy timeout: <span className="text-amber-200">{formatCountdown(policyWindowRemainingSec)}</span>
+                  </div>
+                </div>
+                <div className="mt-2 text-[11px] text-amber-100/90">
+                  Creator evidence: {creatorEvidenceCount} | Opponent evidence: {opponentEvidenceCount}
+                </div>
+                {policyWinnerLabel && (
+                  <div className="mt-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-2 text-[11px] text-emerald-200">
+                    30-minute policy condition met. Current winner by evidence policy: {policyWinnerLabel}.
+                  </div>
+                )}
+              </div>
+
+              {statusNum === 4 && (
+                <div className="rounded-2xl border border-white/10 bg-black/40 p-3">
+                  <input
+                    id="dispute-evidence-upload"
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => void onEvidenceFileChange(event)}
+                    className="sr-only"
+                  />
+                  <label
+                    htmlFor="dispute-evidence-upload"
+                    className="flex cursor-pointer items-center gap-3 rounded-2xl border border-dashed border-sky-400/50 bg-sky-500/10 px-4 py-4 transition hover:bg-sky-500/15"
+                  >
+                    <div className="rounded-xl border border-sky-400/60 bg-sky-500/20 p-2 text-sky-100">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M12 16V4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                        <path d="M7 9L12 4L17 9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                        <path d="M5 20H19" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                      </svg>
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold uppercase tracking-wider text-sky-100">
+                        Click Here To Upload Evidence
+                      </div>
+                      <div className="text-[11px] text-sky-200/90">Attachment only. Max file size: 5MB.</div>
+                    </div>
+                  </label>
+
+                  {evidenceAttachment && (
+                    <div className="mt-3 rounded-2xl border border-white/15 bg-slate-900/70 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-xs font-semibold text-white">
+                            {evidenceAttachment.name}
+                          </div>
+                          <div className="text-[11px] text-gray-400">
+                            {formatFileSize(evidenceAttachment.sizeBytes)} | {evidenceAttachment.mimeType}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="rounded-xl border border-white/10 bg-white/5 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-200 hover:bg-white/10"
+                          onClick={() => setEvidenceAttachment(null)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <textarea
+                    value={evidenceNote}
+                    onChange={(event) => setEvidenceNote(event.target.value)}
+                    placeholder="Required note: include scoreline and what the screenshot proves"
+                    className="mt-3 w-full rounded-xl border border-white/10 bg-black/50 px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
+                    rows={3}
+                  />
+                  {evidenceError && <div className="mt-2 text-xs text-red-300">{evidenceError}</div>}
+                  <button
+                    type="button"
+                    className="mt-3 rounded-xl border border-sky-500/40 bg-sky-500/20 px-4 py-2 text-xs font-bold uppercase tracking-wider text-sky-100 hover:bg-sky-500/30 disabled:opacity-30"
+                    onClick={() => void uploadDisputeEvidence()}
+                    disabled={!isPlayer || !isConnected || !evidenceAttachment}
+                  >
+                    Upload Evidence
+                  </button>
+                  <button
+                    type="button"
+                    className="mt-3 rounded-xl border border-red-500/40 bg-red-500/20 px-4 py-2 text-xs font-bold uppercase tracking-wider text-red-100 hover:bg-red-500/30 disabled:opacity-30"
+                    onClick={() => setShowConcedeDisputeConfirm(true)}
+                    disabled={!isPlayer || !canAct}
+                  >
+                    I Lost - Cancel Dispute
+                  </button>
+                </div>
+              )}
+
+              <div className="max-h-[45vh] space-y-3 overflow-y-auto pr-1">
+                <div className="rounded-2xl border border-white/10 bg-black/40 p-3">
+                  <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-[0.3em] text-gray-500">
+                    <span>Dispute Chat</span>
+                    <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[9px] text-sky-200">
+                      Admin + System
+                    </span>
+                  </div>
+                  {disputeMessages.length === 0 ? (
+                    <div className="mt-3 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-gray-400">
+                      No messages yet. Admin will post updates here.
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-2">
+                      {disputeMessages.map((message) => {
+                        const isAdmin = message.senderRole === "admin";
+                        return (
+                          <div key={message.id} className={`flex ${isAdmin ? "justify-end" : "justify-start"}`}>
+                            <div
+                              className={`max-w-[88%] rounded-2xl border px-3 py-2 ${
+                                isAdmin
+                                  ? "border-sky-500/40 bg-sky-500/20 text-sky-100"
+                                  : "border-amber-500/30 bg-amber-500/10 text-amber-100"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-white/70">
+                                <span>{isAdmin ? "Admin" : "System"}</span>
+                                <span>{new Date(message.createdAt).toLocaleTimeString()}</span>
+                              </div>
+                              <p className="mt-1 text-xs leading-relaxed">{message.message}</p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+                {disputeEvidence.length === 0 && (
+                  <div className="rounded-2xl border border-white/10 bg-black/40 p-3 text-xs text-gray-400">
+                    No dispute evidence uploaded yet.
+                  </div>
+                )}
+                {disputeEvidence.map((item) => (
+                  <div key={item.id} className="rounded-2xl border border-white/10 bg-black/40 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-gray-400">
+                      <span>Uploader: {shortAddress(item.uploader)}</span>
+                      <span>{new Date(item.createdAt).toLocaleString()}</span>
+                    </div>
+                    {item.note && <p className="mt-2 text-xs text-gray-300">{item.note}</p>}
+                    <div className="mt-3 rounded-xl border border-white/10 bg-slate-900/70 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-xs font-semibold text-white">{item.attachmentName}</div>
+                          <div className="text-[11px] text-gray-400">
+                            {formatFileSize(item.attachmentSizeBytes)} | {item.attachmentMimeType}
+                          </div>
+                        </div>
+                        <a
+                          href={item.imageDataUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-sky-200 hover:bg-sky-500/20"
+                        >
+                          View Attachment
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isRematching && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
+          <div className="w-full max-w-md rounded-3xl border border-emerald-500/30 bg-slate-900/95 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl">
+            <div className="text-[11px] uppercase tracking-[0.35em] text-emerald-300/80">Rematch</div>
+            <h3 className="mt-2 text-2xl font-semibold text-white">Rematching Same Stake</h3>
+            <p className="mt-2 text-sm text-gray-300">
+              {rematchStatusText || "Preparing your rematch room..."}
+            </p>
+            <div className="mt-5 flex items-center gap-3 text-emerald-200">
+              <span className="h-5 w-5 animate-spin rounded-full border-2 border-emerald-300/40 border-t-emerald-200" />
+              <span className="text-xs uppercase tracking-wider">Processing</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showAwaitingOpponent && (
         <div
@@ -1200,11 +2179,11 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
           onClick={() => setShowAwaitingOpponent(false)}
         >
           <div
-            className="w-full max-w-lg rounded-3xl border border-sky-500/30 bg-slate-900/95 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl"
+            className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-3xl border border-sky-500/30 bg-slate-900/95 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="text-[11px] uppercase tracking-[0.35em] text-sky-300/80">Result Submitted</div>
-            <h3 className="mt-2 text-3xl font-semibold text-white">Waiting For Opponent</h3>
+            <h3 className="mt-2 text-2xl font-semibold text-white sm:text-3xl">Waiting For Opponent</h3>
             <p className="mt-3 text-sm text-gray-300">
               Your win was submitted on-chain. Opponent can accept now, dispute, or timeout will allow keeper auto-finalization.
             </p>
@@ -1230,13 +2209,13 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
           onClick={() => setShowDisputeConfirm(false)}
         >
           <div
-            className="w-full max-w-md rounded-3xl border border-red-500/30 bg-slate-900/95 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl"
+            className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-3xl border border-red-500/30 bg-slate-900/95 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="text-[11px] uppercase tracking-[0.35em] text-red-300/80">Confirm Dispute</div>
             <h3 className="mt-2 text-2xl font-semibold text-white">Open dispute now?</h3>
             <p className="mt-3 text-sm text-gray-300">
-              This sends the match to dispute state for admin resolution.
+              This sends the match to dispute state for admin resolution. You can upload evidence later in Dispute Center.
             </p>
             <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <button
@@ -1249,10 +2228,12 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
               <button
                 type="button"
                 className="rounded-2xl border border-red-500/40 bg-red-500/20 px-4 py-3 text-xs font-bold uppercase tracking-wider text-red-100 hover:bg-red-500/30 disabled:opacity-20"
-                disabled={!canAct}
+                disabled={!canAct || disputeCooldownActive}
                 onClick={submitDispute}
               >
-                Confirm Dispute
+                {disputeCooldownActive
+                  ? `Dispute Started Already (${disputeCooldownRemainingSec}s)`
+                  : "Confirm Dispute"}
               </button>
             </div>
           </div>
@@ -1265,7 +2246,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
           onClick={() => setShowLoseConfirm(false)}
         >
           <div
-            className="w-full max-w-md rounded-3xl border border-white/10 bg-slate-900/95 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl"
+            className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-3xl border border-white/10 bg-slate-900/95 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="text-[11px] uppercase tracking-[0.35em] text-red-300/80">Confirm Loss</div>
@@ -1291,6 +2272,41 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                 }}
               >
                 {isOutcomeSubmitting ? "Submitting..." : "Confirm I Lost"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showConcedeDisputeConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4"
+          onClick={() => setShowConcedeDisputeConfirm(false)}
+        >
+          <div
+            className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-3xl border border-red-500/30 bg-slate-900/95 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="text-[11px] uppercase tracking-[0.35em] text-red-300/80">Concede Dispute</div>
+            <h3 className="mt-2 text-2xl font-semibold text-white">Confirm you lost this dispute?</h3>
+            <p className="mt-3 text-sm text-gray-300">
+              This closes dispute and releases escrow payout to your opponent.
+            </p>
+            <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs font-bold uppercase tracking-wider text-white hover:bg-white/10"
+                onClick={() => setShowConcedeDisputeConfirm(false)}
+              >
+                Go Back
+              </button>
+              <button
+                type="button"
+                className="rounded-2xl border border-red-500/40 bg-red-500/20 px-4 py-3 text-xs font-bold uppercase tracking-wider text-red-100 hover:bg-red-500/30 disabled:opacity-20"
+                disabled={!isPlayer || !canAct}
+                onClick={submitConcedeDispute}
+              >
+                Confirm And Release
               </button>
             </div>
           </div>

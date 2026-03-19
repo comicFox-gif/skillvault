@@ -7,6 +7,9 @@
     "compile": "hardhat compile",
     "test": "hardhat test",
     "test:escrow": "hardhat test test/SkillVaultMatchEscrow.ts",
+    "deploy:escrow:polkadot": "hardhat run --network polkadotHubTestnet scripts/deploy-match-escrow.ts",
+    "keeper:escrow:polkadot": "hardhat run --network polkadotHubTestnet scripts/keeper-match-escrow.ts",
+    "keeper:escrow:polkadot:watch": "set KEEPER_WATCH=1&& hardhat run --network polkadotHubTestnet scripts/keeper-match-escrow.ts",
     "deploy:escrow:moonbase": "hardhat run --network moonbaseAlpha scripts/deploy-match-escrow.ts",
     "keeper:escrow:moonbase": "hardhat run --network moonbaseAlpha scripts/keeper-match-escrow.ts",
     "keeper:escrow:moonbase:watch": "set KEEPER_WATCH=1&& hardhat run --network moonbaseAlpha scripts/keeper-match-escrow.ts"
