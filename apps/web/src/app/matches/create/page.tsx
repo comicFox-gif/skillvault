@@ -105,7 +105,6 @@ export default function CreateMatchPage() {
   const openConnectRef = useRef<(() => void) | null>(null);
   const autoRematchConnectPromptedRef = useRef(false);
   const autoRematchTriggeredRef = useRef(false);
-  const autoOpenedProvisionalRef = useRef<string | null>(null);
 
   const roomCode = useMemo(() => {
     if (!matchId) return null;
@@ -181,20 +180,6 @@ export default function CreateMatchPage() {
     }, 6000);
     return () => window.clearTimeout(timeoutId);
   }, [txHash, roomCode, checkingReceipt, expectedMatchId, autoRechecks]);
-
-  useEffect(() => {
-    if (!txHash || !provisionalTarget || roomCode) return;
-    const fingerprint = `${txHash}:${provisionalTarget}`;
-    if (autoOpenedProvisionalRef.current === fingerprint) return;
-
-    const timeoutId = window.setTimeout(() => {
-      if (roomCode) return;
-      autoOpenedProvisionalRef.current = fingerprint;
-      router.push(provisionalTarget);
-    }, 10_000);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [txHash, provisionalTarget, roomCode, router]);
 
   useEffect(() => {
     if (!matchId || typeof window === "undefined") return;
