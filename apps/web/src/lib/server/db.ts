@@ -93,6 +93,32 @@ export async function ensureDatabaseSchema() {
       CREATE INDEX IF NOT EXISTS wallet_reputation_cache_updated_idx
       ON wallet_reputation_cache (updated_at)
     `;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS rematch_intents (
+        old_match_id TEXT PRIMARY KEY,
+        new_match_id TEXT NOT NULL,
+        new_room_code TEXT NOT NULL,
+        requested_by TEXT NOT NULL,
+        requested_by_role TEXT NOT NULL,
+        creator TEXT NOT NULL,
+        opponent TEXT NOT NULL,
+        stake TEXT NOT NULL,
+        timeframe TEXT NOT NULL,
+        join_mins TEXT NOT NULL,
+        game TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        joined_by TEXT,
+        cancelled_by TEXT
+      )
+    `;
+    await sql`
+      CREATE INDEX IF NOT EXISTS rematch_intents_updated_idx
+      ON rematch_intents (updated_at)
+    `;
   })();
   await schemaInitPromise;
 }
