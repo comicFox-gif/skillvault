@@ -191,6 +191,8 @@ const EVIDENCE_NOTE_MIN_LENGTH = 12;
 const DISPUTE_CLICK_COOLDOWN_MS = 50_000;
 const REMATCH_RECEIPT_WAIT_TIMEOUT_MS = 30_000;
 const REMATCH_RECEIPT_POLL_INTERVAL_MS = 2_000;
+const REMATCH_RPC_CALL_TIMEOUT_MS = 6_000;
+const REMATCH_API_TIMEOUT_MS = 12_000;
 const TX_ACTION_RECEIPT_WAIT_TIMEOUT_MS = 45_000;
 const TX_ACTION_RECEIPT_POLL_INTERVAL_MS = 2_000;
 
@@ -223,6 +225,24 @@ function makeAlphabetMask(seed: string, length = 12) {
     masked += letters[state % letters.length];
   }
   return masked;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return await new Promise<T>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(new Error("Timed out while waiting for network response."));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timeoutId);
+        reject(error);
+      },
+    );
+  });
 }
 
 function isMobileBrowser() {
@@ -785,13 +805,38 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     expectedId: bigint | null,
   ): Promise<bigint | null> {
     if (!publicClient) return null;
+    let trackedHash = hash;
     const startedAt = Date.now();
     while (Date.now() - startedAt < REMATCH_RECEIPT_WAIT_TIMEOUT_MS) {
       let receipt: Awaited<ReturnType<typeof publicClient.getTransactionReceipt>> | null = null;
       try {
-        receipt = await publicClient.getTransactionReceipt({ hash });
+        receipt = await withTimeout(
+          publicClient.getTransactionReceipt({ hash: trackedHash }),
+          REMATCH_RPC_CALL_TIMEOUT_MS,
+        );
       } catch {
         receipt = null;
+      }
+      if (!receipt) {
+        try {
+          const remainingMs = Math.max(
+            REMATCH_RECEIPT_POLL_INTERVAL_MS,
+            REMATCH_RECEIPT_WAIT_TIMEOUT_MS - (Date.now() - startedAt),
+          );
+          receipt = await publicClient.waitForTransactionReceipt({
+            hash: trackedHash,
+            timeout: Math.min(REMATCH_RPC_CALL_TIMEOUT_MS, remainingMs),
+            pollingInterval: REMATCH_RECEIPT_POLL_INTERVAL_MS,
+            onReplaced: (replacement) => {
+              const replacedHash = replacement.transaction.hash;
+              if (!replacedHash) return;
+              trackedHash = replacedHash;
+              setTxHash(replacedHash);
+            },
+          });
+        } catch {
+          receipt = null;
+        }
       }
       if (receipt) {
         if (receipt.status === "reverted") {
@@ -806,12 +851,15 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
 
     if (expectedId !== null) {
       try {
-        const nextId = await publicClient.readContract({
-          address: escrowAddress!,
-          abi: escrowAbi,
-          functionName: "nextMatchId",
-          args: [],
-        });
+        const nextId = await withTimeout(
+          publicClient.readContract({
+            address: escrowAddress!,
+            abi: escrowAbi,
+            functionName: "nextMatchId",
+            args: [],
+          }),
+          REMATCH_RPC_CALL_TIMEOUT_MS,
+        );
         if (typeof nextId === "bigint" && nextId > expectedId) {
           return expectedId;
         }
@@ -838,13 +886,21 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     setIsRematching(true);
     setRematchStatusText("Preparing rematch settings...");
     try {
-      const nextId = await publicClient.readContract({
-        address: escrowAddress,
-        abi: escrowAbi,
-        functionName: "nextMatchId",
-        args: [],
-      });
-      const expectedId = typeof nextId === "bigint" ? nextId : null;
+      let expectedId: bigint | null = null;
+      try {
+        const nextId = await withTimeout(
+          publicClient.readContract({
+            address: escrowAddress,
+            abi: escrowAbi,
+            functionName: "nextMatchId",
+            args: [],
+          }),
+          REMATCH_RPC_CALL_TIMEOUT_MS,
+        );
+        expectedId = typeof nextId === "bigint" ? nextId : null;
+      } catch {
+        expectedId = null;
+      }
       const joinBySeconds = BigInt(Math.max(1, Number(rematchJoinMins || "30"))) * 60n;
       const confirmBySeconds = BigInt(Math.max(1, Number(rematchTimeframe || "10"))) * 60n;
 
@@ -867,27 +923,38 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
       const newRoomCode = encodeMatchCode(newMatchId);
       const requestedByRole: "creator" | "opponent" = isCreator ? "creator" : "opponent";
       const oldMatchId = matchId.toString();
-
-      await fetch(`/api/rematch/${encodeURIComponent(oldMatchId)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "create",
-          intent: {
-            newMatchId: newMatchId.toString(),
-            newRoomCode,
-            requestedBy: address?.toLowerCase() ?? "",
-            requestedByRole,
-            creator: (creator ?? "").toLowerCase(),
-            opponent: (opponent ?? "").toLowerCase(),
-            stake: formatEther(stakeValue),
-            timeframe: rematchTimeframe,
-            joinMins: rematchJoinMins,
-            game: rematchGame,
-            platform: rematchPlatform,
-          },
-        }),
-      });
+      setRematchStatusText("Saving rematch invite...");
+      const controller = new AbortController();
+      const abortId = window.setTimeout(() => controller.abort(), REMATCH_API_TIMEOUT_MS);
+      try {
+        const response = await fetch(`/api/rematch/${encodeURIComponent(oldMatchId)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "create",
+            intent: {
+              newMatchId: newMatchId.toString(),
+              newRoomCode,
+              requestedBy: address?.toLowerCase() ?? "",
+              requestedByRole,
+              creator: (creator ?? "").toLowerCase(),
+              opponent: (opponent ?? "").toLowerCase(),
+              stake: formatEther(stakeValue),
+              timeframe: rematchTimeframe,
+              joinMins: rematchJoinMins,
+              game: rematchGame,
+              platform: rematchPlatform,
+            },
+          }),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => ({}))) as { error?: string };
+          throw new Error(payload.error || "Failed to save rematch invite.");
+        }
+      } finally {
+        window.clearTimeout(abortId);
+      }
 
       const nextParams = new URLSearchParams();
       nextParams.set("t", rematchTimeframe);
