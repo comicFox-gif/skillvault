@@ -223,6 +223,11 @@ function makeAlphabetMask(seed: string, length = 12) {
   return masked;
 }
 
+function isMobileBrowser() {
+  if (typeof navigator === "undefined") return false;
+  return /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent);
+}
+
 function normalizeDisputeMessages(items: DisputeMessageItem[]) {
   const byId = new Map<string, DisputeMessageItem>();
   for (const item of items) {
@@ -384,6 +389,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [autoJoinTriggered, setAutoJoinTriggered] = useState(false);
   const [joinAfterConnect, setJoinAfterConnect] = useState(false);
+  const [isJoinActionPending, setIsJoinActionPending] = useState(false);
   const [isOutcomeSubmitting, setIsOutcomeSubmitting] = useState(false);
   const [copiedRoomCode, setCopiedRoomCode] = useState(false);
   const [copiedMatchLink, setCopiedMatchLink] = useState(false);
@@ -1426,7 +1432,8 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   }, [policyWindowRemainingSec, creatorEvidenceCount, opponentEvidenceCount]);
 
   async function joinAndLockStake() {
-    if (!stakeValue || !escrowAddress) return;
+    if (!stakeValue || !escrowAddress || isJoinActionPending) return;
+    setIsJoinActionPending(true);
     await runTx(() =>
       writeWithNonce({
         address: escrowAddress!,
@@ -1439,43 +1446,67 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   }
 
   function handleJoinClick() {
-    if (!canShowJoinCTA || typeof stake !== "bigint") return;
+    if (!canShowJoinCTA || typeof stake !== "bigint" || isJoinActionPending) return;
     if (isConnected && !opponentIsOpen && !isOpponent) {
       setErr(`This match is reserved for opponent wallet ${shortAddress(opponent)}.`);
       return;
     }
     if (!isConnected) {
+      setIsJoinActionPending(true);
       setJoinAfterConnect(true);
       openConnectRef.current?.();
       return;
     }
-    joinAndLockStake();
+    void joinAndLockStake();
   }
 
   useEffect(() => {
     if (!joinAfterConnect || !isConnected) return;
     if (!canJoin || typeof stake !== "bigint") {
       setJoinAfterConnect(false);
+      setIsJoinActionPending(false);
       return;
     }
     setJoinAfterConnect(false);
-    joinAndLockStake();
+    void joinAndLockStake();
   }, [joinAfterConnect, isConnected, canJoin, stake]);
 
   useEffect(() => {
+    if (!joinAfterConnect || isConnected) return;
+    const timeoutId = window.setTimeout(() => {
+      setJoinAfterConnect(false);
+      setIsJoinActionPending(false);
+    }, 15000);
+    return () => window.clearTimeout(timeoutId);
+  }, [joinAfterConnect, isConnected]);
+
+  useEffect(() => {
     if (!autoJoinRequested) return;
-    if (!autoJoinEligible || autoJoinTriggered) return;
+    if (!autoJoinEligible || autoJoinTriggered || isJoinActionPending) return;
     if (!isConnected) return;
     setAutoJoinTriggered(true);
-    joinAndLockStake();
-  }, [autoJoinRequested, autoJoinEligible, isConnected, autoJoinTriggered]);
+    void joinAndLockStake();
+  }, [autoJoinRequested, autoJoinEligible, isConnected, autoJoinTriggered, isJoinActionPending]);
 
   useEffect(() => {
     if (!autoJoinRequested || isConnected) return;
+    if (isMobileBrowser()) return;
     if (autoJoinConnectPromptedRef.current) return;
     autoJoinConnectPromptedRef.current = true;
+    setIsJoinActionPending(true);
     openConnectRef.current?.();
   }, [autoJoinRequested, isConnected]);
+
+  useEffect(() => {
+    if (!isJoinActionPending) return;
+    if (err) {
+      setIsJoinActionPending(false);
+      return;
+    }
+    if (statusNum !== 0 || opponentPaid) {
+      setIsJoinActionPending(false);
+    }
+  }, [isJoinActionPending, err, statusNum, opponentPaid]);
 
   useEffect(() => {
     if (!hasValidRoomCode || !isPlayer || statusNum !== 5) {
@@ -1813,8 +1844,11 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                     <button
                       className="w-full rounded-2xl border border-sky-500/40 bg-sky-500/20 p-4 font-bold uppercase tracking-wider text-sky-100 transition-all hover:bg-sky-500/30 disabled:opacity-20 disabled:cursor-not-allowed disabled:bg-gray-800"
                       onClick={handleJoinClick}
+                      disabled={isJoinActionPending || !canShowJoinCTA}
                     >
-                      {!isConnected
+                      {isJoinActionPending
+                        ? "Processing..."
+                        : !isConnected
                         ? `Connect Wallet + Lock ${nativeSymbol} Stake`
                         : `Join + Lock ${nativeSymbol} Stake`}
                     </button>
