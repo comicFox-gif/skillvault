@@ -137,7 +137,7 @@ After deploy:
 
 ## Admin
 
-- Admin route: `/comicfoxxx`
+- Admin route: `/adminSetInCode
 - `/admin` is disabled (not found)
 
 ## License
