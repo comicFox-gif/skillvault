@@ -1609,7 +1609,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
 
         <div className="grid gap-8 lg:grid-cols-12">
           {/* Left Column: Stats */}
-          <div className="lg:col-span-7 space-y-6">
+          <div className="min-w-0 lg:col-span-7 space-y-6">
             {/* Status Banner */}
             <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/10 via-white/5 to-transparent p-[1px] shadow-[0_20px_60px_rgba(0,0,0,0.55)]">
               <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_10%,rgba(56,189,248,0.18),transparent_45%),radial-gradient(circle_at_90%_90%,rgba(59,130,246,0.12),transparent_45%)]" />
@@ -1805,7 +1805,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
           </div>
 
           {/* Right Column: Actions */}
-          <div className="lg:col-span-5 space-y-6">
+          <div className="min-w-0 lg:col-span-5 space-y-6">
             <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/10 via-white/5 to-transparent p-[1px] shadow-[0_20px_60px_rgba(0,0,0,0.55)]">
               <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_10%,rgba(56,189,248,0.18),transparent_45%),radial-gradient(circle_at_90%_90%,rgba(59,130,246,0.12),transparent_45%)]" />
               <div className="relative rounded-[22px] bg-slate-900/90 p-6 backdrop-blur-xl">
@@ -2103,7 +2103,65 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
 
           {!historyLoading && !historyError && (
             <>
-              <div className="overflow-x-auto rounded-2xl border border-white/10 bg-black/40">
+              <div className="space-y-3 md:hidden">
+                {historyRows.length === 0 && (
+                  <div className="rounded-2xl border border-white/10 bg-black/40 p-3 text-center text-xs text-gray-500">
+                    No player history available yet.
+                  </div>
+                )}
+                {historyRows.map((row) => (
+                  <div key={`${row.wallet}-mobile`} className="rounded-2xl border border-white/10 bg-black/40 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[10px] uppercase tracking-wider text-sky-200">
+                        {row.role}
+                      </span>
+                      <span className="font-mono text-xs text-sky-300">{shortAddress(row.wallet)}</span>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
+                      <div className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-gray-300">
+                        Wins: <span className="font-semibold text-emerald-300">{row.history.wins}</span>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-gray-300">
+                        Losses: <span className="font-semibold text-red-300">{row.history.losses}</span>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-gray-300">
+                        Win%: <span className="font-semibold text-sky-200">{row.winRate}%</span>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-gray-300">
+                        Resolved: <span className="font-semibold text-gray-200">{row.history.resolved}</span>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-gray-300">
+                        Disputes: <span className="font-semibold text-amber-300">{row.history.disputes}</span>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-gray-300">
+                        No-response: <span className="font-semibold text-rose-300">{row.history.noResponseFlags}</span>
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {row.history.entries.length === 0 && (
+                        <span className="text-[11px] text-gray-500">No recent matches</span>
+                      )}
+                      {row.history.entries.slice(0, 4).map((entry) => (
+                        <span
+                          key={`${row.wallet}-mobile-${entry.matchId}-${entry.opponent}`}
+                          className={
+                            entry.result === "Win"
+                              ? "rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-200"
+                              : entry.result === "Loss"
+                                ? "rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-[10px] text-red-200"
+                                : entry.result === "Disputed"
+                                  ? "rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-200"
+                                  : "rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[10px] text-gray-300"
+                          }
+                        >
+                          #{entry.matchId} {entry.result}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="hidden overflow-x-auto rounded-2xl border border-white/10 bg-black/40 md:block">
                 <table className="min-w-[920px] text-xs">
                   <thead className="text-[10px] uppercase tracking-[0.2em] text-gray-500">
                     <tr className="border-b border-white/10">
@@ -2121,7 +2179,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                   <tbody>
                     {historyRows.length === 0 && (
                       <tr>
-                        <td colSpan={10} className="px-3 py-5 text-center text-gray-500">
+                        <td colSpan={9} className="px-3 py-5 text-center text-gray-500">
                           No player history available yet.
                         </td>
                       </tr>
