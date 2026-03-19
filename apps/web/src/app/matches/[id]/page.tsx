@@ -223,6 +223,82 @@ function makeAlphabetMask(seed: string, length = 12) {
   return masked;
 }
 
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error("Failed to read image data."));
+    };
+    reader.onerror = () => reject(new Error("Failed to read image data."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function loadImageFromDataUrl(dataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Failed to decode image."));
+    image.src = dataUrl;
+  });
+}
+
+async function compressImageAttachment(file: File): Promise<EvidenceAttachment> {
+  const originalDataUrl = await blobToDataUrl(file);
+  const originalName = file.name || "evidence-image";
+  const originalAttachment: EvidenceAttachment = {
+    name: originalName,
+    sizeBytes: file.size,
+    mimeType: file.type || "image/*",
+    dataUrl: originalDataUrl,
+  };
+
+  if (typeof window === "undefined") return originalAttachment;
+  if (file.type === "image/gif") return originalAttachment;
+  if (file.size <= 1_500_000) return originalAttachment;
+
+  try {
+    const image = await loadImageFromDataUrl(originalDataUrl);
+    const maxDimension = 1600;
+    const sourceWidth = image.naturalWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.height;
+    const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
+    const targetWidth = Math.max(1, Math.round(sourceWidth * scale));
+    const targetHeight = Math.max(1, Math.round(sourceHeight * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return originalAttachment;
+
+    ctx.drawImage(image, 0, 0, targetWidth, targetHeight);
+    const compressedBlob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, "image/jpeg", 0.8);
+    });
+    if (!compressedBlob) return originalAttachment;
+
+    const compressedDataUrl = await blobToDataUrl(compressedBlob);
+    const compressedName = originalName.replace(/\.[a-zA-Z0-9]+$/, "") || "evidence-image";
+    const compressedAttachment: EvidenceAttachment = {
+      name: `${compressedName}.jpg`,
+      sizeBytes: compressedBlob.size,
+      mimeType: "image/jpeg",
+      dataUrl: compressedDataUrl,
+    };
+
+    return compressedAttachment.sizeBytes < originalAttachment.sizeBytes
+      ? compressedAttachment
+      : originalAttachment;
+  } catch {
+    return originalAttachment;
+  }
+}
+
 export default function MatchDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
@@ -510,30 +586,23 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     if (!file.type.startsWith("image/")) {
       setEvidenceError("Only image files are allowed.");
       setEvidenceAttachment(null);
-      return;
-    }
-    if (file.size > MAX_EVIDENCE_BYTES) {
-      setEvidenceError("File is too large. Compress file and upload again.");
-      setEvidenceAttachment(null);
+      event.target.value = "";
       return;
     }
     setEvidenceError(null);
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result !== "string") {
-        setEvidenceError("Failed to read image.");
+    try {
+      const attachment = await compressImageAttachment(file);
+      if (attachment.sizeBytes > MAX_EVIDENCE_BYTES) {
+        setEvidenceError("File is too large. Compress file and upload again.");
         setEvidenceAttachment(null);
+        event.target.value = "";
         return;
       }
-      setEvidenceAttachment({
-        name: file.name,
-        sizeBytes: file.size,
-        mimeType: file.type,
-        dataUrl: reader.result,
-      });
-    };
-    reader.onerror = () => setEvidenceError("Failed to read image.");
-    reader.readAsDataURL(file);
+      setEvidenceAttachment(attachment);
+    } catch {
+      setEvidenceError("Failed to read image.");
+      setEvidenceAttachment(null);
+    }
     event.target.value = "";
   }
 

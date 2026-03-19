@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { type DisputeEvidenceItem } from "@/lib/disputeEvidence";
 import {
@@ -41,7 +42,8 @@ export type ReputationSnapshot = {
   updatedAt: number;
 };
 
-const STORE_DIR = path.join(process.cwd(), "data");
+const SERVERLESS_RUNTIME = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const STORE_DIR = SERVERLESS_RUNTIME ? path.join(os.tmpdir(), "skillvault-data") : path.join(process.cwd(), "data");
 const STORE_PATH = path.join(STORE_DIR, "disputes.json");
 const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024;
 const MIN_EVIDENCE_BYTES = 40 * 1024;
@@ -97,12 +99,24 @@ function isRecoverableBackendError(error: unknown) {
       : error && typeof error === "object" && "message" in error
         ? String((error as { message?: unknown }).message ?? "")
         : "";
+  const lower = message.toLowerCase();
   return (
-    message.includes("ENOTFOUND") ||
-    message.includes("ECONNREFUSED") ||
-    message.includes("ETIMEDOUT") ||
-    message.includes("fetch failed") ||
-    message.includes("Failed to fetch")
+    lower.includes("enotfound") ||
+    lower.includes("econnrefused") ||
+    lower.includes("etimedout") ||
+    lower.includes("econnreset") ||
+    lower.includes("epipe") ||
+    lower.includes("erofs") ||
+    lower.includes("read-only file system") ||
+    lower.includes("permission denied") ||
+    lower.includes("401") ||
+    lower.includes("403") ||
+    lower.includes("unauthorized") ||
+    lower.includes("invalid api key") ||
+    lower.includes("row-level security") ||
+    lower.includes("jwt") ||
+    lower.includes("pgrst") ||
+    lower.includes("fetch failed")
   );
 }
 
