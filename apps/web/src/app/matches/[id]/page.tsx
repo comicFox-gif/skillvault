@@ -193,6 +193,8 @@ const REMATCH_RECEIPT_WAIT_TIMEOUT_MS = 30_000;
 const REMATCH_RECEIPT_POLL_INTERVAL_MS = 2_000;
 const REMATCH_RPC_CALL_TIMEOUT_MS = 6_000;
 const REMATCH_API_TIMEOUT_MS = 12_000;
+const REMATCH_RECENT_MATCH_LOOKBACK = 20n;
+const REMATCH_CREATED_AT_TOLERANCE_SEC = 20 * 60;
 const TX_ACTION_RECEIPT_WAIT_TIMEOUT_MS = 45_000;
 const TX_ACTION_RECEIPT_POLL_INTERVAL_MS = 2_000;
 
@@ -870,6 +872,78 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     return null;
   }
 
+  async function findRecentRematchMatchId(
+    creatorAddress: Address,
+    opponentAddress: Address,
+    stakeAmount: bigint,
+  ): Promise<bigint | null> {
+    if (!publicClient || !escrowAddress) return null;
+    let nextId: bigint | null = null;
+    try {
+      const next = await withTimeout(
+        publicClient.readContract({
+          address: escrowAddress,
+          abi: escrowAbi,
+          functionName: "nextMatchId",
+          args: [],
+        }),
+        REMATCH_RPC_CALL_TIMEOUT_MS,
+      );
+      nextId = typeof next === "bigint" ? next : null;
+    } catch {
+      nextId = null;
+    }
+    if (nextId === null || nextId === 0n) return null;
+
+    const creatorLower = creatorAddress.toLowerCase();
+    const opponentLower = opponentAddress.toLowerCase();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const minCreatedAt = Math.max(0, nowSec - REMATCH_CREATED_AT_TOLERANCE_SEC);
+    const stopId = nextId > REMATCH_RECENT_MATCH_LOOKBACK ? nextId - REMATCH_RECENT_MATCH_LOOKBACK : 0n;
+
+    let cursor = nextId - 1n;
+    while (cursor >= stopId) {
+      try {
+        const row = (await withTimeout(
+          publicClient.readContract({
+            address: escrowAddress,
+            abi: escrowAbi,
+            functionName: "matches",
+            args: [cursor],
+          }),
+          REMATCH_RPC_CALL_TIMEOUT_MS,
+        )) as MatchStorageData;
+
+        const rowCreator = row?.[0]?.toLowerCase();
+        const rowOpponent = row?.[1]?.toLowerCase();
+        const rowStake = row?.[2];
+        const rowCreatedAt = row?.[4];
+        const createdAtSec =
+          typeof rowCreatedAt === "bigint"
+            ? Number(rowCreatedAt)
+            : typeof rowCreatedAt === "number"
+              ? rowCreatedAt
+              : 0;
+
+        if (
+          rowCreator === creatorLower &&
+          rowOpponent === opponentLower &&
+          rowStake === stakeAmount &&
+          createdAtSec >= minCreatedAt
+        ) {
+          return cursor;
+        }
+      } catch {
+        // ignore gaps/read errors and continue scanning backward
+      }
+
+      if (cursor === 0n) break;
+      cursor -= 1n;
+    }
+
+    return null;
+  }
+
   async function startRematchSameStake() {
     if (isRematching) return;
     if (!escrowAddress || !publicClient || !stakeValue || !isPlayer || statusNum !== 5) return;
@@ -915,7 +989,11 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
 
       setTxHash(hash);
       setRematchStatusText("Transaction submitted. Finalizing rematch room...");
-      const newMatchId = await resolveCreatedMatchId(hash, expectedId);
+      let newMatchId = await resolveCreatedMatchId(hash, expectedId);
+      if (newMatchId === null && address) {
+        setRematchStatusText("Finalizing room code. Scanning latest matches...");
+        newMatchId = await findRecentRematchMatchId(address, rematchOpponent, stakeValue);
+      }
       if (newMatchId === null) {
         throw new Error("Rematch tx submitted but new room code is still pending. Try again in a few seconds.");
       }
