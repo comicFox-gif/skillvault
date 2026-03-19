@@ -83,6 +83,21 @@ export default function VaultPage() {
               </div>
             </div>
 
+            <nav className="hidden items-center gap-6 md:flex">
+              <Link
+                href="/matches"
+                className="text-xs font-bold uppercase tracking-wider text-gray-400 transition-colors hover:text-white sm:text-sm"
+              >
+                Matches
+              </Link>
+              <Link
+                href="/tournaments"
+                className="text-xs font-bold uppercase tracking-wider text-gray-400 transition-colors hover:text-white sm:text-sm"
+              >
+                Tournaments
+              </Link>
+            </nav>
+
             {!isConnected ? (
               <ConnectButton.Custom>
                 {({ openConnectModal }) => {
@@ -180,7 +195,7 @@ export default function VaultPage() {
             )}
           </div>
 
-          <div className="mt-4 flex w-full flex-wrap items-center gap-4">
+          <div className="mt-4 flex w-full flex-wrap items-center gap-4 md:hidden">
             <Link
               href="/matches"
               className="text-xs font-bold uppercase tracking-wider text-gray-400 transition-colors hover:text-white sm:text-sm"

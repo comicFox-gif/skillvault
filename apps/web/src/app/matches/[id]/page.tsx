@@ -191,6 +191,8 @@ const EVIDENCE_NOTE_MIN_LENGTH = 12;
 const DISPUTE_CLICK_COOLDOWN_MS = 50_000;
 const REMATCH_RECEIPT_WAIT_TIMEOUT_MS = 30_000;
 const REMATCH_RECEIPT_POLL_INTERVAL_MS = 2_000;
+const TX_ACTION_RECEIPT_WAIT_TIMEOUT_MS = 45_000;
+const TX_ACTION_RECEIPT_POLL_INTERVAL_MS = 2_000;
 
 function formatFileSize(sizeBytes: number) {
   if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) return "0 B";
@@ -391,6 +393,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const [joinAfterConnect, setJoinAfterConnect] = useState(false);
   const [isJoinActionPending, setIsJoinActionPending] = useState(false);
   const [isOutcomeSubmitting, setIsOutcomeSubmitting] = useState(false);
+  const [isTxActionPending, setIsTxActionPending] = useState(false);
   const [copiedRoomCode, setCopiedRoomCode] = useState(false);
   const [copiedMatchLink, setCopiedMatchLink] = useState(false);
   const [showDisputePanel, setShowDisputePanel] = useState(false);
@@ -412,6 +415,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const autoOpenedDisputeFor = useRef<string | null>(null);
   const disputeCooldownLockRef = useRef(0);
   const disputeMessagesRequestSeqRef = useRef(0);
+  const txActionLockRef = useRef(false);
 
   const data = matchQuery.data as MatchData | undefined;
   const rawStorage = matchStorageQuery.data as MatchStorageData | undefined;
@@ -703,19 +707,39 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     fn: () => Promise<`0x${string}`>,
     onSuccess?: (hash: `0x${string}`) => void,
   ) {
+    if (txActionLockRef.current) return;
+    txActionLockRef.current = true;
+    setIsTxActionPending(true);
     setErr(null);
     setTxHash(null);
     try {
       const hash = await fn();
       setTxHash(hash);
       onSuccess?.(hash);
-      setTimeout(() => {
+      window.setTimeout(() => {
         matchQuery.refetch();
         matchStorageQuery.refetch();
         loadWalletHistories();
       }, 600);
+      if (publicClient) {
+        try {
+          await publicClient.waitForTransactionReceipt({
+            hash,
+            timeout: TX_ACTION_RECEIPT_WAIT_TIMEOUT_MS,
+            pollingInterval: TX_ACTION_RECEIPT_POLL_INTERVAL_MS,
+          });
+        } catch {
+          // Continue even if receipt waiting times out on slow RPCs.
+        }
+      }
+      matchQuery.refetch();
+      matchStorageQuery.refetch();
+      loadWalletHistories();
     } catch (e: any) {
       setErr(e?.shortMessage || e?.message || String(e));
+    } finally {
+      txActionLockRef.current = false;
+      setIsTxActionPending(false);
     }
   }
 
@@ -1182,6 +1206,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   }
 
   const canAct = Boolean(isConnected && escrowAddress);
+  const txActionBusy = Boolean(isTxActionPending || isOutcomeSubmitting);
   const matchStarted = Boolean(
     (statusNum === 2 || statusNum === 3 || statusNum === 4) && cancelCountdown === 0,
   );
@@ -1608,8 +1633,8 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
         </ConnectButton.Custom>
 
         <div className="grid gap-8 lg:grid-cols-12">
-          {/* Left Column: Stats */}
-          <div className="min-w-0 lg:col-span-7 space-y-6">
+          {/* Left Column: Status */}
+          <div className="min-w-0 lg:col-span-7">
             {/* Status Banner */}
             <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/10 via-white/5 to-transparent p-[1px] shadow-[0_20px_60px_rgba(0,0,0,0.55)]">
               <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_10%,rgba(56,189,248,0.18),transparent_45%),radial-gradient(circle_at_90%_90%,rgba(59,130,246,0.12),transparent_45%)]" />
@@ -1667,8 +1692,280 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                 )}
               </div>
             </div>
+          </div>
 
-            {/* Details Grid */}
+          {/* Right Column: Actions */}
+          <div className="min-w-0 lg:col-span-5 space-y-6">
+            <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/10 via-white/5 to-transparent p-[1px] shadow-[0_20px_60px_rgba(0,0,0,0.55)]">
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_10%,rgba(56,189,248,0.18),transparent_45%),radial-gradient(circle_at_90%_90%,rgba(59,130,246,0.12),transparent_45%)]" />
+              <div className="relative rounded-[22px] bg-slate-900/90 p-6 backdrop-blur-xl">
+                <h3 className="mb-6 text-xl font-bold uppercase tracking-widest text-white flex items-center gap-3">
+                  <div className="h-2 w-2 bg-red-500 rotate-45" />
+                  Command Center
+                </h3>
+
+                <div className="space-y-3">
+                  {!matchLoaded && (
+                    <div className="rounded-2xl border border-white/10 bg-black/50 p-4 text-xs text-gray-400">
+                      Loading match data... If this persists, click Refresh.
+                    </div>
+                  )}
+                  {!hasValidRoomCode && (
+                    <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-xs text-red-300">
+                      Invalid room code. Enter a numeric room code (for example: 100245).
+                    </div>
+                  )}
+                  {matchLoaded && !matchExists && (
+                    <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-xs text-red-300">
+                      Match not found. Confirm you are on the same network and using a valid room code.
+                    </div>
+                  )}
+                  {roomFull && (
+                    <div className="w-full rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-center text-xs font-bold uppercase tracking-wider text-red-300">
+                      Room Full
+                    </div>
+                  )}
+                  {showCreatorWaiting && (
+                    <div className="w-full rounded-2xl border border-sky-500/30 bg-sky-500/10 p-4 text-center text-xs font-bold uppercase tracking-wider text-sky-200">
+                      Waiting for Opponent to Join
+                    </div>
+                  )}
+                  {showOpponentJoin && (
+                    <button
+                      className="w-full rounded-2xl border border-sky-500/40 bg-sky-500/20 p-4 font-bold uppercase tracking-wider text-sky-100 transition-all hover:bg-sky-500/30 disabled:opacity-20 disabled:cursor-not-allowed disabled:bg-gray-800"
+                      onClick={handleJoinClick}
+                      disabled={isJoinActionPending || isTxActionPending || !canShowJoinCTA}
+                    >
+                      {isJoinActionPending
+                        ? "Processing..."
+                        : !isConnected
+                        ? `Connect Wallet + Lock ${nativeSymbol} Stake`
+                        : `Join + Lock ${nativeSymbol} Stake`}
+                    </button>
+                  )}
+
+                  {awaitingAcceptOrDispute && normalizedProposedWinner && (
+                    <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4">
+                      <div className="text-[10px] uppercase tracking-[0.3em] text-amber-300/80">
+                        Opponent Reported Result
+                      </div>
+                      <p className="mt-2 text-xs text-amber-100/90">
+                        Opponent claimed they won. Accept to release funds now, cancel to open dispute, or wait for timeout auto-finalization by keeper.
+                      </p>
+                      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <button
+                          className="rounded-2xl border border-emerald-500/40 bg-emerald-500/20 p-3 text-xs font-bold uppercase tracking-wider text-emerald-100 transition-all hover:bg-emerald-500/30 disabled:opacity-20"
+                          disabled={!canAct || txActionBusy}
+                          onClick={() =>
+                            runTx(() =>
+                              writeWithNonce({
+                                address: escrowAddress!,
+                                abi: escrowAbi,
+                                functionName: "proposeWinner",
+                                args: [matchId, normalizedProposedWinner] as const,
+                              }),
+                            )
+                          }
+                        >
+                          Accept Result
+                        </button>
+                        <button
+                          className="rounded-2xl border border-red-500/40 bg-red-500/20 p-3 text-xs font-bold uppercase tracking-wider text-red-100 transition-all hover:bg-red-500/30 disabled:opacity-20"
+                          disabled={!canAct || disputeCooldownActive || isTxActionPending}
+                          onClick={openDisputeConfirm}
+                        >
+                          {disputeCooldownActive
+                            ? `Dispute Started Already (${disputeCooldownRemainingSec}s)`
+                            : "Cancel To Dispute"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                <div className={`grid grid-cols-1 gap-3 ${canShowDispute ? "sm:grid-cols-2" : "sm:grid-cols-1"}`}>
+                  {canShowDispute && (
+                    <button
+                      className="rounded-2xl border border-red-500/30 bg-slate-700/20 p-3 font-bold uppercase tracking-wider text-red-500 transition-all hover:bg-red-900/20 disabled:opacity-20"
+                      disabled={!canAct || disputeCooldownActive || isTxActionPending}
+                      onClick={openDisputeConfirm}
+                    >
+                      {disputeCooldownActive
+                        ? `Dispute Started Already (${disputeCooldownRemainingSec}s)`
+                        : "Dispute"}
+                    </button>
+                  )}
+                  <button
+                    className="rounded-2xl border border-red-500/30 bg-slate-700/20 p-3 font-bold uppercase tracking-wider text-red-500 transition-all hover:bg-red-900/20 disabled:opacity-20"
+                      disabled={!canCancel || isTxActionPending || isJoinActionPending}
+                      onClick={() => runTx(() => writeWithNonce({ address: escrowAddress!, abi: escrowAbi, functionName: "cancel", args: [matchId] }))}
+                    >
+                      {statusNum === 0 && isCreator
+                        ? `Cancel + Refund ${nativeSymbol}`
+                        : cancelCountdown !== null && cancelCountdown > 0
+                        ? `Cancel (${cancelCountdown}s)`
+                        : "Cancel"}
+                    </button>
+                  </div>
+                  {statusNum === 0 && isCreator ? (
+                    <p className="text-[11px] text-gray-500">
+                      You can cancel now and your locked {nativeSymbol} stake is refunded to your wallet.
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-gray-500">
+                      Both players can cancel for 60s after an opponent joins. After that, escrow is locked.
+                    </p>
+                  )}
+                  {disputeCooldownActive && (
+                    <p className="text-[11px] text-amber-300/90">
+                      Dispute started already. Please wait {disputeCooldownRemainingSec}s before trying again.
+                    </p>
+                  )}
+                  {(statusNum === 2 || statusNum === 3) && cancelCountdown !== null && cancelCountdown > 0 && (
+                    <div className="rounded-2xl border border-white/10 bg-black/50 p-3 text-xs text-gray-400">
+                      Outcome controls unlock after the 60-second grace period. Time left: {cancelCountdown}s.
+                    </div>
+                  )}
+                  {canViewDispute && (
+                    <div className="rounded-2xl border border-amber-500/35 bg-amber-500/10 p-4">
+                      <div className="text-[10px] uppercase tracking-[0.35em] text-amber-300/80">
+                        Dispute Center
+                      </div>
+                      <p className="mt-2 text-xs text-amber-100/90">
+                        Dispute is active. Players can open dispute now and upload evidence later.
+                      </p>
+                      <button
+                        type="button"
+                        className="mt-3 w-full rounded-2xl border border-amber-500/40 bg-amber-500/15 p-3 text-xs font-bold uppercase tracking-wider text-amber-100 transition hover:bg-amber-500/25"
+                        onClick={() => {
+                          void refreshDisputeEvidence();
+                          void refreshDisputeMessages();
+                          setShowDisputePanel(true);
+                        }}
+                      >
+                        View Dispute
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {canSelectOutcome && !awaitingAcceptOrDispute && !hasSubmittedOutcome && (
+                  <div className="mt-6 border-t border-white/10 pt-4">
+                    <div className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3">Declare Outcome</div>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <button
+                        type="button"
+                        onClick={submitWinClaim}
+                        disabled={!canAct || !canDeclare || !address || txActionBusy}
+                        className="rounded-2xl border border-sky-500/60 bg-sky-500/20 p-3 text-sm font-bold uppercase tracking-wider text-sky-100 transition hover:bg-sky-500/30 disabled:opacity-20 disabled:cursor-not-allowed"
+                      >
+                        {isOutcomeSubmitting ? "Submitting..." : "I won"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowLoseConfirm(true)}
+                        disabled={!canAct || !canDeclare || !opponentAddressForLoss || txActionBusy}
+                        className="rounded-2xl border border-red-500/40 bg-red-500/15 p-3 text-sm font-bold uppercase tracking-wider text-red-100 transition hover:bg-red-500/25 disabled:opacity-20 disabled:cursor-not-allowed"
+                      >
+                        {isOutcomeSubmitting ? "Submitting..." : "I lost"}
+                      </button>
+                    </div>
+                    <p className="mt-2 text-xs text-gray-500">
+                      If you choose "I lost", payout is released immediately to opponent after wallet confirmation.
+                    </p>
+                    {statusNum === 3 && proposedWinner && address && proposedWinner.toLowerCase() === address.toLowerCase() && (
+                      <div className="mt-2 text-xs text-gray-400">
+                        Waiting for opponent declaration. If they do nothing until timeout, keeper will auto-finalize this result.
+                      </div>
+                    )}
+                    {statusNum === 3 && timeoutSecondsLeft !== null && (
+                      <div className="mt-2 text-xs text-gray-400">
+                        Keeper auto-finalization window: {timeoutSecondsLeft > 0 ? `${timeoutSecondsLeft}s left` : "ready now"}.
+                      </div>
+                    )}
+                    {statusNum === 3 && !proposedWinner && (
+                      <div className="mt-2 text-xs text-gray-400">
+                        Conflicting outcomes detected. Open a dispute to resolve.
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {canSelectOutcome && hasSubmittedOutcome && statusNum === 3 && (
+                  <div className="mt-6 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-100">
+                    Outcome already submitted. Waiting for opponent response or keeper timeout. You can still open dispute.
+                  </div>
+                )}
+
+                {showPostMatchActions && (
+                  <div className="mt-6 border-t border-white/10 pt-4">
+                    <div className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3">Next Match</div>
+                    {rematchPendingForCounterparty && rematchIntent && (
+                      <div className="mb-3 rounded-2xl border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-sky-100">
+                        {rematchIntent.requestedByRole === "creator" ? "Creator" : "Opponent"} clicked rematch same
+                        stake. Join the new room or cancel this request.
+                        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <button
+                            type="button"
+                            className="rounded-xl border border-sky-500/40 bg-sky-500/25 px-3 py-2 font-bold uppercase tracking-wider text-sky-50"
+                            onClick={() => void joinRequestedRematch()}
+                          >
+                            Join Rematch
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 font-bold uppercase tracking-wider text-white"
+                            onClick={() => void cancelRequestedRematch()}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {rematchPendingForRequester && rematchIntent && (
+                      <div className="mb-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-100">
+                        Rematch request sent. Waiting for opponent to join room #{rematchIntent.newRoomCode}.
+                      </div>
+                    )}
+                    {statusNum === 5 && rematchIntent?.status === "cancelled" && (
+                      <div className="mb-3 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">
+                        Rematch request was cancelled.
+                      </div>
+                    )}
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <button
+                        type="button"
+                        onClick={() => void startRematchSameStake()}
+                        disabled={isRematching || !isPlayer || !stakeValue || !rematchOpponent}
+                        className="rounded-2xl border border-emerald-500/40 bg-emerald-500/20 p-3 text-center text-xs font-bold uppercase tracking-wider text-emerald-100 transition hover:bg-emerald-500/30 disabled:opacity-40"
+                      >
+                        Rematch Same Stake
+                      </button>
+                      <Link
+                        href="/matches/create"
+                        className="rounded-2xl border border-white/20 bg-white/5 p-3 text-center text-xs font-bold uppercase tracking-wider text-white transition hover:bg-white/10"
+                      >
+                        Exit + New Amount
+                      </Link>
+                    </div>
+                    <p className="mt-2 text-xs text-gray-500">
+                      Rematch pre-fills the same stake for both players and reopens escrow for a new game.
+                    </p>
+                  </div>
+                )}
+
+                {txHash && (
+                  <div className="mt-4 border-t border-white/5 pt-4">
+                    <p className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">Transaction Hash</p>
+                    <p className="truncate text-xs font-mono text-sky-500">{txHash}</p>
+                  </div>
+                )}
+                {err && <div className="mt-2 text-xs text-red-500 break-all bg-red-900/20 p-2 border border-red-500/20">{err}</div>}
+              </div>
+            </div>
+          </div>
+
+          {/* Left Column: Match Data */}
+          <div className="min-w-0 lg:col-span-7">
             <div className="rounded-3xl border border-white/10 bg-slate-900/90 p-5 backdrop-blur-xl sm:p-6">
               <h3 className="mb-4 text-sm font-bold uppercase tracking-widest text-gray-400 flex items-center gap-2">
                 <div className="h-1 w-4 bg-sky-500" />
@@ -1799,277 +2096,6 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                       : "-"}
                   </span>
                 </div>
-              </div>
-            </div>
-
-          </div>
-
-          {/* Right Column: Actions */}
-          <div className="min-w-0 lg:col-span-5 space-y-6">
-            <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/10 via-white/5 to-transparent p-[1px] shadow-[0_20px_60px_rgba(0,0,0,0.55)]">
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_10%,rgba(56,189,248,0.18),transparent_45%),radial-gradient(circle_at_90%_90%,rgba(59,130,246,0.12),transparent_45%)]" />
-              <div className="relative rounded-[22px] bg-slate-900/90 p-6 backdrop-blur-xl">
-                <h3 className="mb-6 text-xl font-bold uppercase tracking-widest text-white flex items-center gap-3">
-                  <div className="h-2 w-2 bg-red-500 rotate-45" />
-                  Command Center
-                </h3>
-
-                <div className="space-y-3">
-                  {!matchLoaded && (
-                    <div className="rounded-2xl border border-white/10 bg-black/50 p-4 text-xs text-gray-400">
-                      Loading match data... If this persists, click Refresh.
-                    </div>
-                  )}
-                  {!hasValidRoomCode && (
-                    <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-xs text-red-300">
-                      Invalid room code. Enter a numeric room code (for example: 100245).
-                    </div>
-                  )}
-                  {matchLoaded && !matchExists && (
-                    <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-xs text-red-300">
-                      Match not found. Confirm you are on the same network and using a valid room code.
-                    </div>
-                  )}
-                  {roomFull && (
-                    <div className="w-full rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-center text-xs font-bold uppercase tracking-wider text-red-300">
-                      Room Full
-                    </div>
-                  )}
-                  {showCreatorWaiting && (
-                    <div className="w-full rounded-2xl border border-sky-500/30 bg-sky-500/10 p-4 text-center text-xs font-bold uppercase tracking-wider text-sky-200">
-                      Waiting for Opponent to Join
-                    </div>
-                  )}
-                  {showOpponentJoin && (
-                    <button
-                      className="w-full rounded-2xl border border-sky-500/40 bg-sky-500/20 p-4 font-bold uppercase tracking-wider text-sky-100 transition-all hover:bg-sky-500/30 disabled:opacity-20 disabled:cursor-not-allowed disabled:bg-gray-800"
-                      onClick={handleJoinClick}
-                      disabled={isJoinActionPending || !canShowJoinCTA}
-                    >
-                      {isJoinActionPending
-                        ? "Processing..."
-                        : !isConnected
-                        ? `Connect Wallet + Lock ${nativeSymbol} Stake`
-                        : `Join + Lock ${nativeSymbol} Stake`}
-                    </button>
-                  )}
-
-                  {awaitingAcceptOrDispute && normalizedProposedWinner && (
-                    <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4">
-                      <div className="text-[10px] uppercase tracking-[0.3em] text-amber-300/80">
-                        Opponent Reported Result
-                      </div>
-                      <p className="mt-2 text-xs text-amber-100/90">
-                        Opponent claimed they won. Accept to release funds now, cancel to open dispute, or wait for timeout auto-finalization by keeper.
-                      </p>
-                      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <button
-                          className="rounded-2xl border border-emerald-500/40 bg-emerald-500/20 p-3 text-xs font-bold uppercase tracking-wider text-emerald-100 transition-all hover:bg-emerald-500/30 disabled:opacity-20"
-                          disabled={!canAct}
-                          onClick={() =>
-                            runTx(() =>
-                              writeWithNonce({
-                                address: escrowAddress!,
-                                abi: escrowAbi,
-                                functionName: "proposeWinner",
-                                args: [matchId, normalizedProposedWinner] as const,
-                              }),
-                            )
-                          }
-                        >
-                          Accept Result
-                        </button>
-                        <button
-                          className="rounded-2xl border border-red-500/40 bg-red-500/20 p-3 text-xs font-bold uppercase tracking-wider text-red-100 transition-all hover:bg-red-500/30 disabled:opacity-20"
-                          disabled={!canAct || disputeCooldownActive}
-                          onClick={openDisputeConfirm}
-                        >
-                          {disputeCooldownActive
-                            ? `Dispute Started Already (${disputeCooldownRemainingSec}s)`
-                            : "Cancel To Dispute"}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                <div className={`grid grid-cols-1 gap-3 ${canShowDispute ? "sm:grid-cols-2" : "sm:grid-cols-1"}`}>
-                  {canShowDispute && (
-                    <button
-                      className="rounded-2xl border border-red-500/30 bg-slate-700/20 p-3 font-bold uppercase tracking-wider text-red-500 transition-all hover:bg-red-900/20 disabled:opacity-20"
-                      disabled={!canAct || disputeCooldownActive}
-                      onClick={openDisputeConfirm}
-                    >
-                      {disputeCooldownActive
-                        ? `Dispute Started Already (${disputeCooldownRemainingSec}s)`
-                        : "Dispute"}
-                    </button>
-                  )}
-                  <button
-                    className="rounded-2xl border border-red-500/30 bg-slate-700/20 p-3 font-bold uppercase tracking-wider text-red-500 transition-all hover:bg-red-900/20 disabled:opacity-20"
-                      disabled={!canCancel}
-                      onClick={() => runTx(() => writeWithNonce({ address: escrowAddress!, abi: escrowAbi, functionName: "cancel", args: [matchId] }))}
-                    >
-                      {statusNum === 0 && isCreator
-                        ? `Cancel + Refund ${nativeSymbol}`
-                        : cancelCountdown !== null && cancelCountdown > 0
-                        ? `Cancel (${cancelCountdown}s)`
-                        : "Cancel"}
-                    </button>
-                  </div>
-                  {statusNum === 0 && isCreator ? (
-                    <p className="text-[11px] text-gray-500">
-                      You can cancel now and your locked {nativeSymbol} stake is refunded to your wallet.
-                    </p>
-                  ) : (
-                    <p className="text-[11px] text-gray-500">
-                      Both players can cancel for 60s after an opponent joins. After that, escrow is locked.
-                    </p>
-                  )}
-                  {disputeCooldownActive && (
-                    <p className="text-[11px] text-amber-300/90">
-                      Dispute started already. Please wait {disputeCooldownRemainingSec}s before trying again.
-                    </p>
-                  )}
-                  {(statusNum === 2 || statusNum === 3) && cancelCountdown !== null && cancelCountdown > 0 && (
-                    <div className="rounded-2xl border border-white/10 bg-black/50 p-3 text-xs text-gray-400">
-                      Outcome controls unlock after the 60-second grace period. Time left: {cancelCountdown}s.
-                    </div>
-                  )}
-                  {canViewDispute && (
-                    <div className="rounded-2xl border border-amber-500/35 bg-amber-500/10 p-4">
-                      <div className="text-[10px] uppercase tracking-[0.35em] text-amber-300/80">
-                        Dispute Center
-                      </div>
-                      <p className="mt-2 text-xs text-amber-100/90">
-                        Dispute is active. Players can open dispute now and upload evidence later.
-                      </p>
-                      <button
-                        type="button"
-                        className="mt-3 w-full rounded-2xl border border-amber-500/40 bg-amber-500/15 p-3 text-xs font-bold uppercase tracking-wider text-amber-100 transition hover:bg-amber-500/25"
-                        onClick={() => {
-                          void refreshDisputeEvidence();
-                          void refreshDisputeMessages();
-                          setShowDisputePanel(true);
-                        }}
-                      >
-                        View Dispute
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {canSelectOutcome && !awaitingAcceptOrDispute && !hasSubmittedOutcome && (
-                  <div className="mt-6 border-t border-white/10 pt-4">
-                    <div className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3">Declare Outcome</div>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <button
-                        type="button"
-                        onClick={submitWinClaim}
-                        disabled={!canAct || !canDeclare || !address || isOutcomeSubmitting}
-                        className="rounded-2xl border border-sky-500/60 bg-sky-500/20 p-3 text-sm font-bold uppercase tracking-wider text-sky-100 transition hover:bg-sky-500/30 disabled:opacity-20 disabled:cursor-not-allowed"
-                      >
-                        {isOutcomeSubmitting ? "Submitting..." : "I won"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setShowLoseConfirm(true)}
-                        disabled={!canAct || !canDeclare || !opponentAddressForLoss || isOutcomeSubmitting}
-                        className="rounded-2xl border border-red-500/40 bg-red-500/15 p-3 text-sm font-bold uppercase tracking-wider text-red-100 transition hover:bg-red-500/25 disabled:opacity-20 disabled:cursor-not-allowed"
-                      >
-                        {isOutcomeSubmitting ? "Submitting..." : "I lost"}
-                      </button>
-                    </div>
-                    <p className="mt-2 text-xs text-gray-500">
-                      If you choose "I lost", payout is released immediately to opponent after wallet confirmation.
-                    </p>
-                    {statusNum === 3 && proposedWinner && address && proposedWinner.toLowerCase() === address.toLowerCase() && (
-                      <div className="mt-2 text-xs text-gray-400">
-                        Waiting for opponent declaration. If they do nothing until timeout, keeper will auto-finalize this result.
-                      </div>
-                    )}
-                    {statusNum === 3 && timeoutSecondsLeft !== null && (
-                      <div className="mt-2 text-xs text-gray-400">
-                        Keeper auto-finalization window: {timeoutSecondsLeft > 0 ? `${timeoutSecondsLeft}s left` : "ready now"}.
-                      </div>
-                    )}
-                    {statusNum === 3 && !proposedWinner && (
-                      <div className="mt-2 text-xs text-gray-400">
-                        Conflicting outcomes detected. Open a dispute to resolve.
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {canSelectOutcome && hasSubmittedOutcome && statusNum === 3 && (
-                  <div className="mt-6 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-100">
-                    Outcome already submitted. Waiting for opponent response or keeper timeout. You can still open dispute.
-                  </div>
-                )}
-
-                {showPostMatchActions && (
-                  <div className="mt-6 border-t border-white/10 pt-4">
-                    <div className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3">Next Match</div>
-                    {rematchPendingForCounterparty && rematchIntent && (
-                      <div className="mb-3 rounded-2xl border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-sky-100">
-                        {rematchIntent.requestedByRole === "creator" ? "Creator" : "Opponent"} clicked rematch same
-                        stake. Join the new room or cancel this request.
-                        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                          <button
-                            type="button"
-                            className="rounded-xl border border-sky-500/40 bg-sky-500/25 px-3 py-2 font-bold uppercase tracking-wider text-sky-50"
-                            onClick={() => void joinRequestedRematch()}
-                          >
-                            Join Rematch
-                          </button>
-                          <button
-                            type="button"
-                            className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 font-bold uppercase tracking-wider text-white"
-                            onClick={() => void cancelRequestedRematch()}
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                    {rematchPendingForRequester && rematchIntent && (
-                      <div className="mb-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-100">
-                        Rematch request sent. Waiting for opponent to join room #{rematchIntent.newRoomCode}.
-                      </div>
-                    )}
-                    {statusNum === 5 && rematchIntent?.status === "cancelled" && (
-                      <div className="mb-3 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">
-                        Rematch request was cancelled.
-                      </div>
-                    )}
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <button
-                        type="button"
-                        onClick={() => void startRematchSameStake()}
-                        disabled={isRematching || !isPlayer || !stakeValue || !rematchOpponent}
-                        className="rounded-2xl border border-emerald-500/40 bg-emerald-500/20 p-3 text-center text-xs font-bold uppercase tracking-wider text-emerald-100 transition hover:bg-emerald-500/30 disabled:opacity-40"
-                      >
-                        Rematch Same Stake
-                      </button>
-                      <Link
-                        href="/matches/create"
-                        className="rounded-2xl border border-white/20 bg-white/5 p-3 text-center text-xs font-bold uppercase tracking-wider text-white transition hover:bg-white/10"
-                      >
-                        Exit + New Amount
-                      </Link>
-                    </div>
-                    <p className="mt-2 text-xs text-gray-500">
-                      Rematch pre-fills the same stake for both players and reopens escrow for a new game.
-                    </p>
-                  </div>
-                )}
-
-                {txHash && (
-                  <div className="mt-4 border-t border-white/5 pt-4">
-                    <p className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">Transaction Hash</p>
-                    <p className="truncate text-xs font-mono text-sky-500">{txHash}</p>
-                  </div>
-                )}
-                {err && <div className="mt-2 text-xs text-red-500 break-all bg-red-900/20 p-2 border border-red-500/20">{err}</div>}
               </div>
             </div>
           </div>
@@ -2564,7 +2590,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
               <button
                 type="button"
                 className="rounded-2xl border border-red-500/40 bg-red-500/20 px-4 py-3 text-xs font-bold uppercase tracking-wider text-red-100 hover:bg-red-500/30 disabled:opacity-20"
-                disabled={!canAct || disputeCooldownActive}
+                disabled={!canAct || disputeCooldownActive || isTxActionPending}
                 onClick={submitDispute}
               >
                 {disputeCooldownActive
@@ -2601,7 +2627,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
               <button
                 type="button"
                 className="rounded-2xl border border-red-500/40 bg-red-500/20 px-4 py-3 text-xs font-bold uppercase tracking-wider text-red-100 hover:bg-red-500/30 disabled:opacity-20"
-                disabled={!canAct || !canDeclare || !opponentAddressForLoss || isOutcomeSubmitting}
+                disabled={!canAct || !canDeclare || !opponentAddressForLoss || txActionBusy}
                 onClick={() => {
                   setShowLoseConfirm(false);
                   submitLossClaim();
@@ -2639,7 +2665,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
               <button
                 type="button"
                 className="rounded-2xl border border-red-500/40 bg-red-500/20 px-4 py-3 text-xs font-bold uppercase tracking-wider text-red-100 hover:bg-red-500/30 disabled:opacity-20"
-                disabled={!isPlayer || !canAct}
+                disabled={!isPlayer || !canAct || isTxActionPending}
                 onClick={submitConcedeDispute}
               >
                 Confirm And Release
