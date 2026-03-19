@@ -45,6 +45,22 @@ const escrowAbi = [
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
   },
+  {
+    type: "function",
+    name: "getMatch",
+    stateMutability: "view",
+    inputs: [{ name: "matchId", type: "uint256" }],
+    outputs: [
+      { name: "creator", type: "address" },
+      { name: "opponent", type: "address" },
+      { name: "stake", type: "uint256" },
+      { name: "joinedAt", type: "uint64" },
+      { name: "status", type: "uint8" },
+      { name: "creatorPaid", type: "bool" },
+      { name: "opponentPaid", type: "bool" },
+      { name: "proposedWinner", type: "address" },
+    ],
+  },
 ] as const;
 
 const RECEIPT_WAIT_TIMEOUT_MS = 120_000;
@@ -52,6 +68,8 @@ const NEXT_ID_POLL_TRIES = 30;
 const NEXT_ID_POLL_INTERVAL_MS = 1_000;
 const RECEIPT_POLL_INTERVAL_MS = 2_000;
 const AUTO_RECHECK_MAX = 120;
+const CREATOR_MATCH_POLL_TRIES = 45;
+const CREATOR_MATCH_POLL_INTERVAL_MS = 2_000;
 
 export default function CreateMatchPage() {
   const router = useRouter();
@@ -326,6 +344,9 @@ export default function CreateMatchPage() {
       if (!resolved && expectedId) {
         resolved = await pollNextMatchId(expectedId);
       }
+      if (!resolved && expectedId && address) {
+        resolved = await pollMatchByCreator(expectedId, address);
+      }
       if (!resolved) {
         setError("Transaction is still pending. Click Check Again in a few seconds.");
       }
@@ -378,6 +399,32 @@ export default function CreateMatchPage() {
         // ignore transient RPC read errors and retry
       }
       await new Promise((resolve) => setTimeout(resolve, NEXT_ID_POLL_INTERVAL_MS));
+    }
+    return false;
+  }
+
+  async function pollMatchByCreator(expectedId: string, creatorAddress: Address) {
+    if (!publicClient || !escrowAddress) return false;
+    const expected = BigInt(expectedId);
+    const creatorLower = creatorAddress.toLowerCase();
+    for (let i = 0; i < CREATOR_MATCH_POLL_TRIES; i += 1) {
+      try {
+        const row = (await publicClient.readContract({
+          address: escrowAddress,
+          abi: escrowAbi,
+          functionName: "getMatch",
+          args: [expected],
+        })) as readonly [Address, Address, bigint, bigint, bigint | number, boolean, boolean, Address];
+        const creator = row?.[0];
+        if (creator && creator.toLowerCase() === creatorLower) {
+          setMatchId(expectedId);
+          setError(null);
+          return true;
+        }
+      } catch {
+        // keep polling
+      }
+      await new Promise((resolve) => setTimeout(resolve, CREATOR_MATCH_POLL_INTERVAL_MS));
     }
     return false;
   }
