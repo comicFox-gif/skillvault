@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { useAccount, useChainId, useDisconnect, usePublicClient, useReadContract, useWriteContract } from "wagmi";
 import { formatEther, type Address } from "viem";
@@ -121,7 +121,6 @@ export default function AdminDisputesPage() {
   const [adminMessageError, setAdminMessageError] = useState<string | null>(null);
   const [showDisputeModal, setShowDisputeModal] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const autoPolicyTriggeredRef = useRef<Set<string>>(new Set());
   const normalizedMatchIdInput = matchIdInput.trim();
 
   const decodedMatchId = useMemo(
@@ -296,14 +295,6 @@ export default function AdminDisputesPage() {
     }
     setShowDisputeModal(false);
   }, [data, canResolveInAdmin]);
-
-  useEffect(() => {
-    if (!policyWinnerAddress || !canResolveInAdmin || !isContractAdmin || !matchKey) return;
-    if (policyWindowRemainingSec !== 0) return;
-    if (autoPolicyTriggeredRef.current.has(matchKey)) return;
-    autoPolicyTriggeredRef.current.add(matchKey);
-    void resolveMatch(policyWinnerAddress, false);
-  }, [policyWinnerAddress, canResolveInAdmin, isContractAdmin, matchKey, policyWindowRemainingSec]);
 
   async function writeWithNonce(config: WriteConfig) {
     if (!publicClient || !address) {
@@ -528,7 +519,7 @@ export default function AdminDisputesPage() {
                   <button
                     type="button"
                     onClick={openConnectModal}
-                    className="border border-sky-500/30 bg-sky-500/10 px-5 py-2 text-xs font-bold uppercase tracking-wider text-sky-300 sm:text-sm"
+                    className="cursor-pointer border border-sky-500/30 bg-sky-500/10 px-5 py-2 text-xs font-bold uppercase tracking-wider text-sky-300 sm:text-sm"
                   >
                     Link Wallet
                   </button>
@@ -864,17 +855,26 @@ export default function AdminDisputesPage() {
                 <div className="space-y-2">
                   {disputeMessages.map((message) => {
                     const isAdminMessage = message.senderRole === "admin";
+                    const isPlayerMessage = message.senderRole === "player";
                     return (
                       <div key={message.id} className={`flex ${isAdminMessage ? "justify-end" : "justify-start"}`}>
                         <div
                           className={`max-w-[88%] rounded-2xl border px-3 py-2 ${
                             isAdminMessage
                               ? "border-sky-500/40 bg-sky-500/20 text-sky-100"
-                              : "border-amber-500/30 bg-amber-500/10 text-amber-100"
+                              : isPlayerMessage
+                                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-100"
+                                : "border-amber-500/30 bg-amber-500/10 text-amber-100"
                           }`}
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-white/70">
-                            <span>{isAdminMessage ? "Admin" : "System"}</span>
+                            <span>
+                              {isAdminMessage
+                                ? "Admin"
+                                : isPlayerMessage
+                                  ? `Player ${shortAddress(message.senderAddress)}`
+                                  : "System"}
+                            </span>
                             <span>{new Date(message.createdAt).toLocaleString()}</span>
                           </div>
                           <p className="mt-1 text-xs leading-relaxed">{message.message}</p>
@@ -992,17 +992,26 @@ export default function AdminDisputesPage() {
                       ) : (
                         disputeMessages.map((message) => {
                           const isAdminMessage = message.senderRole === "admin";
+                          const isPlayerMessage = message.senderRole === "player";
                           return (
                             <div key={message.id} className={`flex ${isAdminMessage ? "justify-end" : "justify-start"}`}>
                               <div
                                 className={`max-w-[88%] rounded-2xl border px-3 py-2 ${
                                   isAdminMessage
                                     ? "border-sky-500/40 bg-sky-500/20 text-sky-100"
-                                    : "border-amber-500/30 bg-amber-500/10 text-amber-100"
+                                    : isPlayerMessage
+                                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-100"
+                                      : "border-amber-500/30 bg-amber-500/10 text-amber-100"
                                 }`}
                               >
                                 <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-white/70">
-                                  <span>{isAdminMessage ? "Admin" : "System"}</span>
+                                  <span>
+                                    {isAdminMessage
+                                      ? "Admin"
+                                      : isPlayerMessage
+                                        ? `Player ${shortAddress(message.senderAddress)}`
+                                        : "System"}
+                                  </span>
                                   <span>{new Date(message.createdAt).toLocaleString()}</span>
                                 </div>
                                 <p className="mt-1 text-xs leading-relaxed">{message.message}</p>

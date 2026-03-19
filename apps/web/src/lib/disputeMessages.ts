@@ -1,7 +1,7 @@
 export type DisputeMessageItem = {
   id: string;
   matchId: string;
-  senderRole: "admin" | "system";
+  senderRole: "admin" | "player" | "system";
   senderAddress: string;
   message: string;
   createdAt: number;

@@ -91,7 +91,7 @@ export default function VaultPage() {
                     <button
                       type="button"
                       onClick={() => void handleLinkWalletClick(openConnectModal)}
-                      className="relative overflow-hidden rounded-[3px] border border-sky-500/60 bg-transparent px-3 py-2 text-xs font-semibold uppercase text-sky-200 transition hover:bg-sky-500/10 sm:tracking-[0.2em]"
+                      className="relative cursor-pointer overflow-hidden rounded-[3px] border border-sky-500/60 bg-transparent px-3 py-2 text-xs font-semibold uppercase text-sky-200 transition hover:bg-sky-500/10 sm:tracking-[0.2em]"
                     >
                       <span className="relative flex items-center gap-2">
                         <span className="inline-flex h-2 w-2 rounded-full bg-sky-400" />

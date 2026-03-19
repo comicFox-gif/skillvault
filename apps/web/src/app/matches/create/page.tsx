@@ -47,11 +47,11 @@ const escrowAbi = [
   },
 ] as const;
 
-const RECEIPT_WAIT_TIMEOUT_MS = 30_000;
-const NEXT_ID_POLL_TRIES = 6;
+const RECEIPT_WAIT_TIMEOUT_MS = 120_000;
+const NEXT_ID_POLL_TRIES = 30;
 const NEXT_ID_POLL_INTERVAL_MS = 1_000;
 const RECEIPT_POLL_INTERVAL_MS = 2_000;
-const AUTO_RECHECK_MAX = 10;
+const AUTO_RECHECK_MAX = 120;
 
 export default function CreateMatchPage() {
   const router = useRouter();
@@ -146,7 +146,8 @@ export default function CreateMatchPage() {
   }, [timeframe]);
 
   useEffect(() => {
-    if (!txHash || roomCode || checkingReceipt || autoRechecks >= AUTO_RECHECK_MAX) return;
+    if (!txHash || roomCode || checkingReceipt) return;
+    if (autoRechecks >= AUTO_RECHECK_MAX) return;
     const timeoutId = window.setTimeout(() => {
       setAutoRechecks((count) => count + 1);
       void resolveMatchId(txHash as `0x${string}`, expectedMatchId);
@@ -275,21 +276,30 @@ export default function CreateMatchPage() {
   }
 
   async function resolveMatchId(hash: `0x${string}`, expectedId: string | null) {
-    if (!publicClient) return;
+    if (!publicClient) {
+      setError("Wallet client disconnected. Reconnect wallet, then click Check Again.");
+      return;
+    }
     if (checkingReceipt) return;
     setCheckingReceipt(true);
     let resolved = false;
     try {
-      const startedAt = Date.now();
+      let latestHash = hash;
       let receipt: Awaited<ReturnType<typeof publicClient.getTransactionReceipt>> | null = null;
-      while (Date.now() - startedAt < RECEIPT_WAIT_TIMEOUT_MS) {
-        try {
-          receipt = await publicClient.getTransactionReceipt({ hash });
-          break;
-        } catch {
-          // keep polling until timeout
-        }
-        await new Promise((resolve) => setTimeout(resolve, RECEIPT_POLL_INTERVAL_MS));
+      try {
+        receipt = await publicClient.waitForTransactionReceipt({
+          hash,
+          timeout: RECEIPT_WAIT_TIMEOUT_MS,
+          pollingInterval: RECEIPT_POLL_INTERVAL_MS,
+          onReplaced: (replacement) => {
+            const replacedHash = replacement.transaction.hash;
+            if (!replacedHash) return;
+            latestHash = replacedHash;
+            setTxHash(replacedHash);
+          },
+        });
+      } catch {
+        // fall through to nextMatchId polling fallback
       }
 
       if (receipt) {
@@ -300,13 +310,17 @@ export default function CreateMatchPage() {
         const matchedId = extractMatchIdFromReceipt(receipt);
         if (matchedId) {
           setMatchId(matchedId);
+          setError(null);
           resolved = true;
         } else if (expectedId) {
           // Receipt is confirmed but event parsing can fail on some RPC/indexers.
           // Use the pre-read nextMatchId snapshot as deterministic fallback.
           setMatchId(expectedId);
+          setError(null);
           resolved = true;
         }
+      } else if (latestHash !== hash) {
+        setTxHash(latestHash);
       }
 
       if (!resolved && expectedId) {
@@ -348,15 +362,20 @@ export default function CreateMatchPage() {
     if (!publicClient || !escrowAddress) return false;
     const expected = BigInt(expectedId);
     for (let i = 0; i < NEXT_ID_POLL_TRIES; i += 1) {
-      const nextId = await publicClient.readContract({
-        address: escrowAddress,
-        abi: escrowAbi,
-        functionName: "nextMatchId",
-        args: [],
-      });
-      if (typeof nextId === "bigint" && nextId > expected) {
-        setMatchId(expectedId);
-        return true;
+      try {
+        const nextId = await publicClient.readContract({
+          address: escrowAddress,
+          abi: escrowAbi,
+          functionName: "nextMatchId",
+          args: [],
+        });
+        if (typeof nextId === "bigint" && nextId > expected) {
+          setMatchId(expectedId);
+          setError(null);
+          return true;
+        }
+      } catch {
+        // ignore transient RPC read errors and retry
       }
       await new Promise((resolve) => setTimeout(resolve, NEXT_ID_POLL_INTERVAL_MS));
     }

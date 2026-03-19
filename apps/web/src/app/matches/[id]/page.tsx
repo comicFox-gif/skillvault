@@ -9,6 +9,7 @@ import { decodeEventLog, formatEther, zeroAddress, type Address } from "viem";
 import { decodeMatchCode, encodeMatchCode } from "@/lib/matchCode";
 import { appendDisputeEvidence, loadDisputeEvidence, type DisputeEvidenceItem } from "@/lib/disputeEvidence";
 import {
+  appendDisputeMessage,
   ensureDisputeAutoMessage,
   loadDisputeMessages,
   type DisputeMessageItem,
@@ -206,6 +207,22 @@ function formatCountdown(totalSeconds: number | null) {
   return `${mins}m ${secs.toString().padStart(2, "0")}s`;
 }
 
+function makeAlphabetMask(seed: string, length = 12) {
+  const letters = "abcdefghijklmnopqrstuvwxyz";
+  let hash = 2166136261 >>> 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  let state = hash || 1;
+  let masked = "";
+  for (let i = 0; i < length; i += 1) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    masked += letters[state % letters.length];
+  }
+  return masked;
+}
+
 export default function MatchDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
@@ -291,6 +308,9 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const [rematchStatusText, setRematchStatusText] = useState("");
   const [disputeEvidence, setDisputeEvidence] = useState<DisputeEvidenceItem[]>([]);
   const [disputeMessages, setDisputeMessages] = useState<DisputeMessageItem[]>([]);
+  const [disputeMessageDraft, setDisputeMessageDraft] = useState("");
+  const [disputeMessageError, setDisputeMessageError] = useState<string | null>(null);
+  const [isSendingDisputeMessage, setIsSendingDisputeMessage] = useState(false);
   const [evidenceAttachment, setEvidenceAttachment] = useState<EvidenceAttachment | null>(null);
   const [evidenceNote, setEvidenceNote] = useState("");
   const [evidenceError, setEvidenceError] = useState<string | null>(null);
@@ -411,7 +431,17 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     const query = params.toString();
     return `/matches/${encodeURIComponent(roomCode)}${query ? `?${query}` : ""}`;
   }, [hasValidRoomCode, roomCode, searchParams]);
-  const inviteLinkPreview = invitePath || "-";
+  const inviteLinkPreview = useMemo(() => {
+    if (!invitePath) return "-";
+    return `invite://${makeAlphabetMask(invitePath, 14)}`;
+  }, [invitePath]);
+  const connectedRoleLabel = isConnected
+    ? isCreator
+      ? "Creator"
+      : isOpponent
+        ? "Opponent"
+        : "Spectator"
+    : "Not Connected";
 
   function shortAddress(value?: string) {
     if (!value) return "-";
@@ -440,6 +470,38 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
       return;
     }
     setDisputeMessages(await loadDisputeMessages(matchId.toString()));
+  }
+
+  async function sendDisputeMessage() {
+    setDisputeMessageError(null);
+    if (!isConnected || !address) {
+      setDisputeMessageError("Connect wallet to send a dispute message.");
+      return;
+    }
+    if (statusNum !== 4) {
+      setDisputeMessageError("Dispute chat is open only while dispute is active.");
+      return;
+    }
+    const message = disputeMessageDraft.trim();
+    if (!message) {
+      setDisputeMessageError("Message cannot be empty.");
+      return;
+    }
+
+    setIsSendingDisputeMessage(true);
+    try {
+      await appendDisputeMessage(matchId.toString(), {
+        senderRole: "player",
+        senderAddress: address,
+        message,
+      });
+      setDisputeMessageDraft("");
+      await refreshDisputeMessages();
+    } catch (error: any) {
+      setDisputeMessageError(error?.message || "Failed to send dispute message.");
+    } finally {
+      setIsSendingDisputeMessage(false);
+    }
   }
 
   async function onEvidenceFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -1050,6 +1112,13 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
       (statusNum !== 0 || opponentPaid || (!opponentIsOpen && isConnected)),
   );
   const canViewDispute = Boolean(statusNum === 4);
+  const canSendDisputeMessage = Boolean(
+    statusNum === 4 &&
+      isPlayer &&
+      isConnected &&
+      disputeMessageDraft.trim().length > 0 &&
+      !isSendingDisputeMessage,
+  );
   const walletBalanceText = walletBalanceQuery.data
     ? Number(walletBalanceQuery.data.formatted).toLocaleString(undefined, { maximumFractionDigits: 6 })
     : "-";
@@ -1132,6 +1201,9 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   useEffect(() => {
     if (!canViewDispute) {
       setShowDisputePanel(false);
+      setDisputeMessageDraft("");
+      setDisputeMessageError(null);
+      setIsSendingDisputeMessage(false);
     }
     void refreshDisputeEvidence();
     void refreshDisputeMessages();
@@ -1540,12 +1612,42 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                   <span className="text-white">{hasValidRoomCode ? matchId.toString() : "-"}</span>
                 </div>
                 <div className="flex flex-col gap-1 border-b border-white/5 pb-2 sm:flex-row sm:items-center sm:justify-between">
+                  <span className="text-gray-500">Your Role</span>
+                  <span
+                    className={`inline-flex w-fit items-center rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wider sm:w-auto ${
+                      connectedRoleLabel === "Creator"
+                        ? "border-sky-500/30 bg-sky-500/10 text-sky-200"
+                        : connectedRoleLabel === "Opponent"
+                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                          : connectedRoleLabel === "Spectator"
+                            ? "border-amber-500/30 bg-amber-500/10 text-amber-200"
+                            : "border-white/15 bg-white/5 text-gray-300"
+                    }`}
+                  >
+                    {connectedRoleLabel}
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1 border-b border-white/5 pb-2 sm:flex-row sm:items-center sm:justify-between">
                   <span className="text-gray-500">Creator</span>
-                  <span className="text-sky-400 break-all sm:text-right">{creator ?? "-"}</span>
+                  <span className="flex flex-wrap items-center gap-2 sm:justify-end">
+                    <span className="text-sky-400 break-all sm:text-right">{creator ?? "-"}</span>
+                    {isCreator && (
+                      <span className="inline-flex items-center rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-sky-200">
+                        You
+                      </span>
+                    )}
+                  </span>
                 </div>
                 <div className="flex flex-col gap-1 border-b border-white/5 pb-2 sm:flex-row sm:items-center sm:justify-between">
                   <span className="text-gray-500">Opponent</span>
-                  <span className="text-sky-400 break-all sm:text-right">{opponent ?? "-"}</span>
+                  <span className="flex flex-wrap items-center gap-2 sm:justify-end">
+                    <span className="text-sky-400 break-all sm:text-right">{opponent ?? "-"}</span>
+                    {isOpponent && (
+                      <span className="inline-flex items-center rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-200">
+                        You
+                      </span>
+                    )}
+                  </span>
                 </div>
                 <div className="flex flex-col gap-1 border-b border-white/5 pb-2 sm:flex-row sm:items-center sm:justify-between">
                   <span className="text-gray-500">Stake</span>
@@ -2087,7 +2189,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                   <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-[0.3em] text-gray-500">
                     <span>Dispute Chat</span>
                     <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[9px] text-sky-200">
-                      Admin + System
+                      Admin + Players
                     </span>
                   </div>
                   {disputeMessages.length === 0 ? (
@@ -2098,17 +2200,37 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                     <div className="mt-3 space-y-2">
                       {disputeMessages.map((message) => {
                         const isAdmin = message.senderRole === "admin";
+                        const isPlayerMessage = message.senderRole === "player";
+                        const isSelfPlayer =
+                          isPlayerMessage &&
+                          Boolean(address) &&
+                          message.senderAddress.toLowerCase() === String(address).toLowerCase();
                         return (
-                          <div key={message.id} className={`flex ${isAdmin ? "justify-end" : "justify-start"}`}>
+                          <div
+                            key={message.id}
+                            className={`flex ${isAdmin || isSelfPlayer ? "justify-end" : "justify-start"}`}
+                          >
                             <div
                               className={`max-w-[88%] rounded-2xl border px-3 py-2 ${
                                 isAdmin
                                   ? "border-sky-500/40 bg-sky-500/20 text-sky-100"
-                                  : "border-amber-500/30 bg-amber-500/10 text-amber-100"
+                                  : isPlayerMessage
+                                    ? isSelfPlayer
+                                      ? "border-emerald-500/40 bg-emerald-500/20 text-emerald-100"
+                                      : "border-indigo-500/30 bg-indigo-500/10 text-indigo-100"
+                                    : "border-amber-500/30 bg-amber-500/10 text-amber-100"
                               }`}
                             >
                               <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-white/70">
-                                <span>{isAdmin ? "Admin" : "System"}</span>
+                                <span>
+                                  {isAdmin
+                                    ? "Admin"
+                                    : isPlayerMessage
+                                      ? isSelfPlayer
+                                        ? "You"
+                                        : `Player ${shortAddress(message.senderAddress)}`
+                                      : "System"}
+                                </span>
                                 <span>{new Date(message.createdAt).toLocaleTimeString()}</span>
                               </div>
                               <p className="mt-1 text-xs leading-relaxed">{message.message}</p>
@@ -2116,6 +2238,37 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                           </div>
                         );
                       })}
+                    </div>
+                  )}
+                  {statusNum === 4 && isPlayer && (
+                    <div className="mt-3 border-t border-white/10 pt-3">
+                      <textarea
+                        value={disputeMessageDraft}
+                        onChange={(event) => {
+                          setDisputeMessageDraft(event.target.value);
+                          if (disputeMessageError) setDisputeMessageError(null);
+                        }}
+                        placeholder="Send a dispute message to admin and opponent..."
+                        rows={2}
+                        className="w-full rounded-xl border border-white/10 bg-black/50 px-3 py-2 text-xs text-white outline-none focus:border-sky-500"
+                        disabled={!isConnected || isSendingDisputeMessage}
+                      />
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <span className="text-[10px] text-gray-500">
+                          Social handles are automatically blocked for player messages.
+                        </span>
+                        <button
+                          type="button"
+                          className="rounded-xl border border-sky-500/40 bg-sky-500/20 px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-sky-100 hover:bg-sky-500/30 disabled:opacity-30"
+                          onClick={() => void sendDisputeMessage()}
+                          disabled={!canSendDisputeMessage}
+                        >
+                          {isSendingDisputeMessage ? "Sending..." : "Send Message"}
+                        </button>
+                      </div>
+                      {disputeMessageError && (
+                        <div className="mt-2 text-xs text-red-300">{disputeMessageError}</div>
+                      )}
                     </div>
                   )}
                 </div>

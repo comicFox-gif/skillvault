@@ -46,6 +46,8 @@ const STORE_PATH = path.join(STORE_DIR, "disputes.json");
 const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024;
 const MIN_EVIDENCE_BYTES = 40 * 1024;
 const MIN_NOTE_LEN = 12;
+const SOCIAL_HANDLE_PATTERN =
+  /(?:https?:\/\/|www\.|t\.me\/|wa\.me\/|discord\.gg\/|x\.com\/|twitter\.com\/|instagram\.com\/|facebook\.com\/|tiktok\.com\/|snapchat\.com\/|telegram|whatsapp|discord|instagram|facebook|tiktok|snapchat|twitter|\big\b|@\w{2,})/i;
 
 function normalizeMatchId(matchId: string) {
   return String(matchId).trim();
@@ -63,6 +65,14 @@ function normalizeResult(value: unknown): "Win" | "Loss" | "Pending" | "Disputed
     return value;
   }
   return "Pending";
+}
+
+function hasSocialHandleContent(message: string) {
+  return SOCIAL_HANDLE_PATTERN.test(message);
+}
+
+function maskAsBlocked(message: string) {
+  return message.replace(/[^\s]/g, "*");
 }
 
 function isMissingTableError(error: unknown) {
@@ -156,10 +166,11 @@ function mapEvidenceRow(row: any): DisputeEvidenceItem {
 }
 
 function mapMessageRow(row: any): DisputeMessageItem {
+  const rawRole = String(row.sender_role ?? "").toLowerCase();
   return {
     id: String(row.id),
     matchId: String(row.match_id),
-    senderRole: row.sender_role === "admin" ? "admin" : "system",
+    senderRole: rawRole === "admin" ? "admin" : rawRole === "player" ? "player" : "system",
     senderAddress: String(row.sender_address ?? ""),
     message: String(row.message ?? ""),
     createdAt: toEpoch(row.created_at),
@@ -509,10 +520,13 @@ export async function addMessage(
   payload: Omit<DisputeMessageItem, "id" | "matchId" | "createdAt">,
 ) {
   const key = normalizeMatchId(matchId);
-  const message = payload.message.trim();
+  let message = payload.message.trim();
   if (!message) throw new Error("Message cannot be empty.");
-  if (payload.senderRole !== "admin" && payload.senderRole !== "system") {
+  if (payload.senderRole !== "admin" && payload.senderRole !== "player" && payload.senderRole !== "system") {
     throw new Error("Invalid sender role.");
+  }
+  if (payload.senderRole === "player" && hasSocialHandleContent(message)) {
+    message = maskAsBlocked(message);
   }
 
   const item: DisputeMessageItem = {
