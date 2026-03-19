@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { useAccount, useChainId, useDisconnect, usePublicClient, useReadContract, useWriteContract } from "wagmi";
 import { formatEther, type Address } from "viem";
@@ -89,6 +89,15 @@ function formatCountdown(totalSeconds: number | null) {
 
 type MatchData = readonly [Address, Address, bigint, bigint, bigint | number, boolean, boolean, Address];
 
+function normalizeDisputeMessages(items: DisputeMessageItem[]) {
+  const byId = new Map<string, DisputeMessageItem>();
+  for (const item of items) {
+    if (!item?.id) continue;
+    byId.set(item.id, item);
+  }
+  return [...byId.values()].sort((a, b) => a.createdAt - b.createdAt);
+}
+
 export default function AdminDisputesPage() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
@@ -121,6 +130,7 @@ export default function AdminDisputesPage() {
   const [adminMessageError, setAdminMessageError] = useState<string | null>(null);
   const [showDisputeModal, setShowDisputeModal] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const disputeMessagesRequestSeqRef = useRef(0);
   const normalizedMatchIdInput = matchIdInput.trim();
 
   const decodedMatchId = useMemo(
@@ -231,7 +241,10 @@ export default function AdminDisputesPage() {
       ]);
       if (cancelled) return;
       setEvidenceItems(evidence);
-      setDisputeMessages(messages);
+      setDisputeMessages((previous) => {
+        if (messages.length === 0 && previous.length > 0) return previous;
+        return normalizeDisputeMessages([...previous, ...messages]);
+      });
     };
     void loadAll();
     return () => {
@@ -438,7 +451,13 @@ export default function AdminDisputesPage() {
       setDisputeMessages([]);
       return;
     }
-    setDisputeMessages(await loadDisputeMessages(matchKey));
+    const requestSeq = ++disputeMessagesRequestSeqRef.current;
+    const incoming = await loadDisputeMessages(matchKey);
+    if (requestSeq !== disputeMessagesRequestSeqRef.current) return;
+    setDisputeMessages((previous) => {
+      if (incoming.length === 0 && previous.length > 0) return previous;
+      return normalizeDisputeMessages([...previous, ...incoming]);
+    });
   }
 
   async function refreshEvidenceItems() {

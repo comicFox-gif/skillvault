@@ -223,6 +223,15 @@ function makeAlphabetMask(seed: string, length = 12) {
   return masked;
 }
 
+function normalizeDisputeMessages(items: DisputeMessageItem[]) {
+  const byId = new Map<string, DisputeMessageItem>();
+  for (const item of items) {
+    if (!item?.id) continue;
+    byId.set(item.id, item);
+  }
+  return [...byId.values()].sort((a, b) => a.createdAt - b.createdAt);
+}
+
 async function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -396,6 +405,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const autoJoinConnectPromptedRef = useRef(false);
   const autoOpenedDisputeFor = useRef<string | null>(null);
   const disputeCooldownLockRef = useRef(0);
+  const disputeMessagesRequestSeqRef = useRef(0);
 
   const data = matchQuery.data as MatchData | undefined;
   const rawStorage = matchStorageQuery.data as MatchStorageData | undefined;
@@ -427,14 +437,14 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const statusText = typeof statusNum === "number" ? (STATUS[statusNum] ?? `Unknown(${statusNum})`) : "-";
   const matchLoaded = Boolean(data);
   const opponentIsOpen = !opponent || opponent.toLowerCase() === zeroAddress;
+  const canJoinMatchState = Boolean(matchExists && statusNum === 0 && !opponentPaid);
   const canJoin = Boolean(
-    matchExists &&
+    canJoinMatchState &&
       isConnected &&
       !isCreator &&
-      statusNum === 0 &&
-      !opponentPaid &&
       (opponentIsOpen || isOpponent),
   );
+  const canShowJoinCTA = Boolean(canJoinMatchState && !isCreator && (canJoin || !isConnected));
   const autoJoinEligible = Boolean(
     matchExists &&
       !isCreator &&
@@ -517,8 +527,10 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
       ? "Creator"
       : isOpponent
         ? "Opponent"
-        : "Spectator"
-    : "Not Connected";
+        : canJoinMatchState && opponentIsOpen
+          ? "Opponent (Ready)"
+          : "Spectator"
+    : "Connect Wallet";
 
   function shortAddress(value?: string) {
     if (!value) return "-";
@@ -546,7 +558,16 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
       setDisputeMessages([]);
       return;
     }
-    setDisputeMessages(await loadDisputeMessages(matchId.toString()));
+    const requestSeq = ++disputeMessagesRequestSeqRef.current;
+    const incoming = await loadDisputeMessages(matchId.toString());
+    if (requestSeq !== disputeMessagesRequestSeqRef.current) return;
+    setDisputeMessages((previous) => {
+      if (incoming.length === 0 && previous.length > 0) {
+        // Preserve existing UI history on transient empty fetch responses.
+        return previous;
+      }
+      return normalizeDisputeMessages([...previous, ...incoming]);
+    });
   }
 
   async function sendDisputeMessage() {
@@ -1174,7 +1195,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   );
   const canCancel = canCancelCreated || canCancelGrace;
   const showCreatorWaiting = Boolean(isCreator && statusNum === 0 && !opponentPaid);
-  const showOpponentJoin = Boolean(!isCreator && canJoin && typeof stake === "bigint");
+  const showOpponentJoin = Boolean(!isCreator && canShowJoinCTA && typeof stake === "bigint");
   const roomFull = Boolean(
     hasValidRoomCode &&
       matchExists &&
@@ -1418,7 +1439,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   }
 
   function handleJoinClick() {
-    if (!canJoin || typeof stake !== "bigint") return;
+    if (!canShowJoinCTA || typeof stake !== "bigint") return;
     if (isConnected && !opponentIsOpen && !isOpponent) {
       setErr(`This match is reserved for opponent wallet ${shortAddress(opponent)}.`);
       return;
@@ -1687,7 +1708,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                     className={`inline-flex w-fit items-center rounded-md border px-2 py-1 text-[10px] font-bold uppercase tracking-wider sm:w-auto ${
                       connectedRoleLabel === "Creator"
                         ? "border-sky-500/30 bg-sky-500/10 text-sky-200"
-                        : connectedRoleLabel === "Opponent"
+                        : connectedRoleLabel.startsWith("Opponent")
                           ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
                           : connectedRoleLabel === "Spectator"
                             ? "border-amber-500/30 bg-amber-500/10 text-amber-200"

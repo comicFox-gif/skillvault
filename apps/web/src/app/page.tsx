@@ -193,13 +193,6 @@ export default function VaultPage() {
             >
               Tournaments
             </Link>
-            <Link
-              href="/matches/create"
-              className="rounded-md border border-red-400/70 bg-red-600 px-3 py-2 text-xs font-bold uppercase tracking-wider text-white transition-colors hover:bg-red-500 sm:text-sm"
-              onClick={handleCreateMatchClick}
-            >
-              Create Match
-            </Link>
           </div>
         </header>
 
