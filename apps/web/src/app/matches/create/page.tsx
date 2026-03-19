@@ -63,13 +63,9 @@ const escrowAbi = [
   },
 ] as const;
 
-const RECEIPT_WAIT_TIMEOUT_MS = 20_000;
-const NEXT_ID_POLL_TRIES = 30;
-const NEXT_ID_POLL_INTERVAL_MS = 1_000;
+const RECEIPT_WAIT_TIMEOUT_MS = 8_000;
 const RECEIPT_POLL_INTERVAL_MS = 2_000;
 const AUTO_RECHECK_MAX = 120;
-const CREATOR_MATCH_POLL_TRIES = 45;
-const CREATOR_MATCH_POLL_INTERVAL_MS = 2_000;
 
 export default function CreateMatchPage() {
   const router = useRouter();
@@ -324,19 +320,26 @@ export default function CreateMatchPage() {
       let latestHash = hash;
       let receipt: Awaited<ReturnType<typeof publicClient.getTransactionReceipt>> | null = null;
       try {
-        receipt = await publicClient.waitForTransactionReceipt({
-          hash,
-          timeout: RECEIPT_WAIT_TIMEOUT_MS,
-          pollingInterval: RECEIPT_POLL_INTERVAL_MS,
-          onReplaced: (replacement) => {
-            const replacedHash = replacement.transaction.hash;
-            if (!replacedHash) return;
-            latestHash = replacedHash;
-            setTxHash(replacedHash);
-          },
-        });
+        receipt = await publicClient.getTransactionReceipt({ hash });
       } catch {
-        // fall through to nextMatchId polling fallback
+        // continue
+      }
+      if (!receipt) {
+        try {
+          receipt = await publicClient.waitForTransactionReceipt({
+            hash,
+            timeout: RECEIPT_WAIT_TIMEOUT_MS,
+            pollingInterval: RECEIPT_POLL_INTERVAL_MS,
+            onReplaced: (replacement) => {
+              const replacedHash = replacement.transaction.hash;
+              if (!replacedHash) return;
+              latestHash = replacedHash;
+              setTxHash(replacedHash);
+            },
+          });
+        } catch {
+          // fall through to lightweight fallbacks
+        }
       }
 
       if (receipt) {
@@ -360,12 +363,8 @@ export default function CreateMatchPage() {
         setTxHash(latestHash);
       }
 
-      if (!resolved && expectedId) {
-        resolved = await pollNextMatchId(expectedId);
-      }
-      if (!resolved && expectedId && address) {
-        resolved = await pollMatchByCreator(expectedId, address);
-      }
+      if (!resolved && expectedId) resolved = await pollNextMatchId(expectedId);
+      if (!resolved && expectedId && address) resolved = await pollMatchByCreator(expectedId, address);
       if (!resolved) {
         setError("Transaction is still pending. Click Check Again in a few seconds.");
       }
@@ -401,23 +400,20 @@ export default function CreateMatchPage() {
   async function pollNextMatchId(expectedId: string) {
     if (!publicClient || !escrowAddress) return false;
     const expected = BigInt(expectedId);
-    for (let i = 0; i < NEXT_ID_POLL_TRIES; i += 1) {
-      try {
-        const nextId = await publicClient.readContract({
-          address: escrowAddress,
-          abi: escrowAbi,
-          functionName: "nextMatchId",
-          args: [],
-        });
-        if (typeof nextId === "bigint" && nextId > expected) {
-          setMatchId(expectedId);
-          setError(null);
-          return true;
-        }
-      } catch {
-        // ignore transient RPC read errors and retry
+    try {
+      const nextId = await publicClient.readContract({
+        address: escrowAddress,
+        abi: escrowAbi,
+        functionName: "nextMatchId",
+        args: [],
+      });
+      if (typeof nextId === "bigint" && nextId > expected) {
+        setMatchId(expectedId);
+        setError(null);
+        return true;
       }
-      await new Promise((resolve) => setTimeout(resolve, NEXT_ID_POLL_INTERVAL_MS));
+    } catch {
+      // ignore transient RPC read errors; auto-check will retry
     }
     return false;
   }
@@ -426,24 +422,21 @@ export default function CreateMatchPage() {
     if (!publicClient || !escrowAddress) return false;
     const expected = BigInt(expectedId);
     const creatorLower = creatorAddress.toLowerCase();
-    for (let i = 0; i < CREATOR_MATCH_POLL_TRIES; i += 1) {
-      try {
-        const row = (await publicClient.readContract({
-          address: escrowAddress,
-          abi: escrowAbi,
-          functionName: "getMatch",
-          args: [expected],
-        })) as readonly [Address, Address, bigint, bigint, bigint | number, boolean, boolean, Address];
-        const creator = row?.[0];
-        if (creator && creator.toLowerCase() === creatorLower) {
-          setMatchId(expectedId);
-          setError(null);
-          return true;
-        }
-      } catch {
-        // keep polling
+    try {
+      const row = (await publicClient.readContract({
+        address: escrowAddress,
+        abi: escrowAbi,
+        functionName: "getMatch",
+        args: [expected],
+      })) as readonly [Address, Address, bigint, bigint, bigint | number, boolean, boolean, Address];
+      const creator = row?.[0];
+      if (creator && creator.toLowerCase() === creatorLower) {
+        setMatchId(expectedId);
+        setError(null);
+        return true;
       }
-      await new Promise((resolve) => setTimeout(resolve, CREATOR_MATCH_POLL_INTERVAL_MS));
+    } catch {
+      // ignore transient RPC read errors; auto-check will retry
     }
     return false;
   }
