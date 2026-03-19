@@ -63,7 +63,7 @@ const escrowAbi = [
   },
 ] as const;
 
-const RECEIPT_WAIT_TIMEOUT_MS = 120_000;
+const RECEIPT_WAIT_TIMEOUT_MS = 20_000;
 const NEXT_ID_POLL_TRIES = 30;
 const NEXT_ID_POLL_INTERVAL_MS = 1_000;
 const RECEIPT_POLL_INTERVAL_MS = 2_000;
@@ -105,6 +105,7 @@ export default function CreateMatchPage() {
   const openConnectRef = useRef<(() => void) | null>(null);
   const autoRematchConnectPromptedRef = useRef(false);
   const autoRematchTriggeredRef = useRef(false);
+  const autoOpenedProvisionalRef = useRef<string | null>(null);
 
   const roomCode = useMemo(() => {
     if (!matchId) return null;
@@ -114,6 +115,14 @@ export default function CreateMatchPage() {
     if (!expectedMatchId) return null;
     return encodeMatchCode(expectedMatchId);
   }, [expectedMatchId]);
+  const provisionalTarget = useMemo(() => {
+    if (!expectedRoomCode) return null;
+    const timeParam = encodeURIComponent(timeframe);
+    const gameParam = encodeURIComponent(game);
+    const platformParam = encodeURIComponent(platform);
+    const joinParam = encodeURIComponent(joinMins);
+    return `/matches/${encodeURIComponent(expectedRoomCode)}?t=${timeParam}&g=${gameParam}&p=${platformParam}&j=${joinParam}`;
+  }, [expectedRoomCode, timeframe, game, platform, joinMins]);
   const txExplorerUrl = txHash ? `${explorerBaseUrl}/tx/${txHash}` : null;
 
   useEffect(() => {
@@ -174,6 +183,20 @@ export default function CreateMatchPage() {
   }, [txHash, roomCode, checkingReceipt, expectedMatchId, autoRechecks]);
 
   useEffect(() => {
+    if (!txHash || !provisionalTarget || roomCode) return;
+    const fingerprint = `${txHash}:${provisionalTarget}`;
+    if (autoOpenedProvisionalRef.current === fingerprint) return;
+
+    const timeoutId = window.setTimeout(() => {
+      if (roomCode) return;
+      autoOpenedProvisionalRef.current = fingerprint;
+      router.push(provisionalTarget);
+    }, 10_000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [txHash, provisionalTarget, roomCode, router]);
+
+  useEffect(() => {
     if (!matchId || typeof window === "undefined") return;
     const meta = {
       game,
@@ -204,6 +227,10 @@ export default function CreateMatchPage() {
 
   async function onCreate() {
     if (creating) return;
+    if (txHash && !roomCode) {
+      setError("A previous match transaction is still finalizing. Wait, or use Open Provisional Room.");
+      return;
+    }
     if (!isSupportedChainId(chainId)) {
       setError(`Unsupported network. Switch wallet to one of: ${getSupportedChainNames()}.`);
       return;
@@ -283,13 +310,20 @@ export default function CreateMatchPage() {
 
       setTxHash(hash);
       setCreateStatus("pending");
-
-      await resolveMatchId(hash, expectedId);
+      void resolveMatchId(hash, expectedId);
     } catch (e: any) {
-      setError(e?.shortMessage || e?.message || String(e));
+      const message = e?.shortMessage || e?.message || String(e);
+      if (String(message).toLowerCase().includes("transaction already imported")) {
+        setError(
+          "Transaction already imported by RPC. Check wallet activity for pending tx, then use Open Provisional Room.",
+        );
+        setCreateStatus("pending");
+      } else {
+        setError(message);
+        setCreateStatus("idle");
+      }
     } finally {
       setCreating(false);
-      setCreateStatus("idle");
     }
   }
 
@@ -577,11 +611,11 @@ export default function CreateMatchPage() {
                         openConnectModal();
                         return;
                       }
-                      onCreate();
+                      void onCreate();
                     }}
-                    disabled={!escrowAddress || creating}
+                    disabled={!escrowAddress || creating || Boolean(txHash && !roomCode)}
                   >
-                    {creating ? "Creating Match..." : "Initialize Match"}
+                    {creating ? "Creating Match..." : txHash && !roomCode ? "Finalizing..." : "Initialize Match"}
                   </button>
                 )}
               </ConnectButton.Custom>
@@ -662,6 +696,9 @@ export default function CreateMatchPage() {
                       onClick={() => {
                         setMatchId(null);
                         setTxHash(null);
+                        setExpectedMatchId(null);
+                        setCreateStatus("idle");
+                        setCheckingReceipt(false);
                       }}
                     >
                       Close
@@ -687,7 +724,10 @@ export default function CreateMatchPage() {
                         <button
                           type="button"
                           className="ml-2 rounded-xl border border-white/10 bg-white/5 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-white hover:bg-white/10"
-                          onClick={() => router.push(`/matches/${encodeURIComponent(expectedRoomCode)}?t=${encodeURIComponent(timeframe)}`)}
+                          onClick={() => {
+                            if (!provisionalTarget) return;
+                            router.push(provisionalTarget);
+                          }}
                         >
                           Open Provisional Room
                         </button>
