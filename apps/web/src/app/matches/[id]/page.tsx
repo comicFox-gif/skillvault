@@ -429,10 +429,11 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const opponentIsOpen = !opponent || opponent.toLowerCase() === zeroAddress;
   const canJoin = Boolean(
     matchExists &&
+      isConnected &&
       !isCreator &&
       statusNum === 0 &&
       !opponentPaid &&
-      (opponentIsOpen || !isConnected || isOpponent),
+      (opponentIsOpen || isOpponent),
   );
   const autoJoinEligible = Boolean(
     matchExists &&
