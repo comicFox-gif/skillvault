@@ -1,41 +1,59 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
+import { formatEther } from "viem";
+import { getNativeSymbolForChain } from "@/lib/chains";
+import { loadTournaments, type TournamentSummary } from "@/lib/tournaments";
 
-const mockTournaments = [
-  {
-    id: "12",
-    title: "Night Circuit Cup",
-    game: "eFootball",
-    platform: "Console",
-    size: 8,
-    timeframe: "10 mins",
-    status: "Open",
-    startsAt: "Tonight 20:00",
-  },
-  {
-    id: "15",
-    title: "Final Clash",
-    game: "Mortal Kombat",
-    platform: "PC",
-    size: 6,
-    timeframe: "8 mins",
-    status: "In Progress",
-    startsAt: "Live",
-  },
-  {
-    id: "21",
-    title: "Road to Glory",
-    game: "FC25",
-    platform: "Console",
-    size: 10,
-    timeframe: "12 mins",
-    status: "Open",
-    startsAt: "Tomorrow 18:00",
-  },
-];
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  return fallback;
+}
+
+function formatStatus(status: TournamentSummary["status"]) {
+  if (status === "full") return "Full";
+  if (status === "in_progress") return "In Progress";
+  if (status === "completed") return "Completed";
+  return "Open";
+}
+
+function stakeLabel(stakeWei: string, chainId: number) {
+  try {
+    return `${formatEther(BigInt(stakeWei))} ${getNativeSymbolForChain(chainId)}`;
+  } catch {
+    return `0 ${getNativeSymbolForChain(chainId)}`;
+  }
+}
 
 export default function TournamentsPage() {
+  const [items, setItems] = useState<TournamentSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let isMounted = true;
+    async function run() {
+      try {
+        setLoading(true);
+        setError("");
+        const next = await loadTournaments(40);
+        if (isMounted) setItems(next);
+      } catch (fetchError: unknown) {
+        if (isMounted) setError(getErrorMessage(fetchError, "Failed to load tournaments."));
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
+    void run();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   return (
     <main
       className="relative min-h-screen w-full overflow-x-hidden bg-transparent text-white selection:bg-sky-500/30"
@@ -50,7 +68,7 @@ export default function TournamentsPage() {
         <div className="mb-8 flex flex-col gap-4 border-b border-white/10 pb-6 sm:mb-10 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-3xl font-black uppercase tracking-tight sm:text-4xl">
-              Tournaments <span className="text-sky-400">(Mock)</span>
+              Tournaments
             </h1>
             <p className="mt-2 text-sm text-gray-400">
               Bracketed competitions with 6-10 players. Payouts: 70% / 20% / 10%.
@@ -66,35 +84,63 @@ export default function TournamentsPage() {
           </div>
         </div>
 
-        <div className="grid gap-4">
-          {mockTournaments.map((t) => (
-            <div
-              key={t.id}
-              className="rounded-3xl border border-white/10 bg-slate-900/90 p-6 backdrop-blur-xl"
-            >
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <div className="text-xs uppercase tracking-[0.3em] text-gray-500">{t.game} - {t.platform}</div>
-                  <h2 className="mt-2 text-2xl font-semibold text-white">{t.title}</h2>
-                  <div className="mt-2 text-sm text-gray-400">
-                    {t.size} players - {t.timeframe} - {t.startsAt}
+        {loading && (
+          <div className="rounded-3xl border border-white/10 bg-slate-900/90 p-6 text-sm text-gray-300 backdrop-blur-xl">
+            Loading tournaments...
+          </div>
+        )}
+
+        {!loading && error && (
+          <div className="rounded-3xl border border-red-400/30 bg-red-500/10 p-6 text-sm text-red-200 backdrop-blur-xl">
+            {error}
+          </div>
+        )}
+
+        {!loading && !error && items.length === 0 && (
+          <div className="rounded-3xl border border-white/10 bg-slate-900/90 p-6 text-sm text-gray-300 backdrop-blur-xl">
+            No tournaments yet. Create the first one.
+          </div>
+        )}
+
+        {!loading && !error && items.length > 0 && (
+          <div className="grid gap-4">
+            {items.map((t) => (
+              <div
+                key={t.id}
+                className="rounded-3xl border border-white/10 bg-slate-900/90 p-6 backdrop-blur-xl"
+              >
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="text-xs uppercase tracking-[0.3em] text-gray-500">{t.game} - {t.platform}</div>
+                    <h2 className="mt-2 text-2xl font-semibold text-white">{t.title}</h2>
+                    <div className="mt-2 text-sm text-gray-400">
+                      {t.participantCount}/{t.size} players - {t.timeframeMins} mins - Host: {t.createdByUsername}
+                    </div>
+                    <div className="mt-1 text-xs text-gray-400">
+                      Entry stake: {stakeLabel(t.stakeWei, t.stakeChainId)}
+                    </div>
+                    <div className="mt-1 text-xs text-gray-500">
+                      {t.format === "league"
+                        ? `League to ${t.pointsTarget ?? 30} points`
+                        : "Bracket knockout"}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-xs uppercase tracking-wider text-sky-300">
+                      {formatStatus(t.status)}
+                    </span>
+                    <Link
+                      className="rounded-[3px] border border-sky-500/60 px-4 py-2 text-xs font-bold uppercase tracking-wider text-sky-200 hover:bg-sky-500/10"
+                      href={`/tournaments/${t.id}`}
+                    >
+                      View
+                    </Link>
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-xs uppercase tracking-wider text-sky-300">
-                    {t.status}
-                  </span>
-                  <Link
-                    className="rounded-[3px] border border-sky-500/60 px-4 py-2 text-xs font-bold uppercase tracking-wider text-sky-200 hover:bg-sky-500/10"
-                    href={`/tournaments/${t.id}`}
-                  >
-                    View
-                  </Link>
-                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </main>
   );

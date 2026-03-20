@@ -4,15 +4,38 @@ import Link from "next/link";
 import { type MouseEvent as ReactMouseEvent, useEffect, useRef, useState } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { useAccount, useDisconnect } from "wagmi";
+import { loadWalletProfile } from "@/lib/profile";
 
 export default function VaultPage() {
   const { address, isConnected } = useAccount();
   const { disconnect } = useDisconnect();
   const [walletMenuOpen, setWalletMenuOpen] = useState(false);
   const [showConnectPrompt, setShowConnectPrompt] = useState(false);
+  const [walletUsername, setWalletUsername] = useState("");
   const walletMenuRef = useRef<HTMLDivElement | null>(null);
   const openConnectRef = useRef<(() => void) | null>(null);
   const systemOnline = Boolean(isConnected);
+
+  useEffect(() => {
+    let mounted = true;
+    async function run() {
+      if (!isConnected || !address) {
+        if (mounted) setWalletUsername("");
+        return;
+      }
+      try {
+        const profile = await loadWalletProfile(address);
+        if (!mounted) return;
+        setWalletUsername(profile?.username?.trim() ?? "");
+      } catch {
+        if (mounted) setWalletUsername("");
+      }
+    }
+    void run();
+    return () => {
+      mounted = false;
+    };
+  }, [address, isConnected]);
 
   useEffect(() => {
     function onDocClick(event: globalThis.MouseEvent) {
@@ -56,7 +79,6 @@ export default function VaultPage() {
     }
   }
 
-
   return (
     <main
       className="relative min-h-screen w-full overflow-x-hidden bg-transparent text-white selection:bg-sky-500/30"
@@ -96,6 +118,14 @@ export default function VaultPage() {
               >
                 Tournaments
               </Link>
+              {isConnected && (
+                <Link
+                  href="/profile"
+                  className="text-xs font-bold uppercase tracking-wider text-gray-400 transition-colors hover:text-white sm:text-sm"
+                >
+                  Profile
+                </Link>
+              )}
             </nav>
 
             {!isConnected ? (
@@ -126,7 +156,7 @@ export default function VaultPage() {
                 >
                   <span className="relative flex items-center gap-2">
                     <span className="inline-flex h-2 w-2 rounded-full bg-sky-400" />
-                    {address ? `${address.slice(0, 6)}...${address.slice(-4)}` : "Wallet"}
+                    {walletUsername || (address ? `${address.slice(0, 6)}...${address.slice(-4)}` : "Wallet")}
                     <span className="text-sky-400/70">v</span>
                   </span>
                 </button>
@@ -208,6 +238,14 @@ export default function VaultPage() {
             >
               Tournaments
             </Link>
+            {isConnected && (
+              <Link
+                href="/profile"
+                className="text-xs font-bold uppercase tracking-wider text-gray-400 transition-colors hover:text-white sm:text-sm"
+              >
+                Profile
+              </Link>
+            )}
           </div>
         </header>
 

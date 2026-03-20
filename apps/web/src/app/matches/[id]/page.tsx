@@ -14,12 +14,14 @@ import {
   loadDisputeMessages,
   type DisputeMessageItem,
 } from "@/lib/disputeMessages";
+import { loadWalletProfiles } from "@/lib/profile";
 import {
   getEscrowAddressForChain,
   getNativeSymbolForChain,
   getSupportedChainNames,
   isSupportedChainId,
 } from "@/lib/chains";
+import { publishWalletNotification, showBrowserNotification } from "@/lib/notifications";
 
 const escrowAbi = [
   {
@@ -408,6 +410,8 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const [showConcedeDisputeConfirm, setShowConcedeDisputeConfirm] = useState(false);
   const [showAwaitingOpponent, setShowAwaitingOpponent] = useState(false);
   const [historyByWallet, setHistoryByWallet] = useState<Record<string, WalletHistory>>({});
+  const [walletUsernames, setWalletUsernames] = useState<Record<string, string>>({});
+  const [walletAvatars, setWalletAvatars] = useState<Record<string, string>>({});
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -438,6 +442,12 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const disputeCooldownLockRef = useRef(0);
   const disputeMessagesRequestSeqRef = useRef(0);
   const txActionLockRef = useRef(false);
+  const notificationStateRef = useRef<{
+    statusNum: number | null;
+    proposedWinner: string | null;
+    opponentPaid: boolean;
+    resolvedWinner: string | null;
+  } | null>(null);
 
   const data = matchQuery.data as MatchData | undefined;
   const rawStorage = matchStorageQuery.data as MatchStorageData | undefined;
@@ -569,13 +579,68 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     return `${value.slice(0, 6)}...${value.slice(-4)}`;
   }
 
+  function usernameForWallet(value?: string) {
+    if (!value) return null;
+    return walletUsernames[value.toLowerCase()] ?? null;
+  }
+
+  function displayNameForWallet(value?: string) {
+    const username = usernameForWallet(value);
+    if (username) return username;
+    return shortAddress(value);
+  }
+
+  function avatarForWallet(value?: string) {
+    if (!value) return "";
+    return walletAvatars[value.toLowerCase()] ?? "";
+  }
+
   const resolvedWinnerLabel = useMemo(() => {
     const winner = resolvedWinner?.toLowerCase();
     if (!winner || winner === zeroAddress) return "Refunded";
-    if (creator && winner === creator.toLowerCase()) return "Creator";
-    if (opponent && winner === opponent.toLowerCase()) return "Opponent";
-    return shortAddress(resolvedWinner);
-  }, [resolvedWinner, creator, opponent]);
+    if (creator && winner === creator.toLowerCase()) {
+      return usernameForWallet(creator) ?? "Creator";
+    }
+    if (opponent && winner === opponent.toLowerCase()) {
+      return usernameForWallet(opponent) ?? "Opponent";
+    }
+    return displayNameForWallet(resolvedWinner);
+  }, [resolvedWinner, creator, opponent, walletUsernames]);
+
+  const creatorDisplayName = creator ? displayNameForWallet(creator) : "-";
+  const opponentDisplayName = opponent ? displayNameForWallet(opponent) : "-";
+  const proposedWinnerDisplayName = proposedWinner
+    ? proposedWinner.toLowerCase() === zeroAddress
+      ? "-"
+      : displayNameForWallet(proposedWinner)
+    : "-";
+  const matchPagePath = `/matches/${encodeURIComponent(roomCode)}`;
+
+  async function dispatchMatchPushNotification(payload: {
+    wallets: Array<string | undefined>;
+    title: string;
+    body: string;
+    tag: string;
+    data?: Record<string, unknown>;
+  }) {
+    const wallets = payload.wallets
+      .map((wallet) => String(wallet ?? "").trim().toLowerCase())
+      .filter((wallet, index, list) => /^0x[a-f0-9]{40}$/.test(wallet) && list.indexOf(wallet) === index);
+    if (!wallets.length) return;
+
+    await publishWalletNotification({
+      wallets,
+      title: payload.title,
+      body: payload.body,
+      tag: payload.tag,
+      url: matchPagePath,
+      data: {
+        matchId: matchId.toString(),
+        roomCode,
+        ...payload.data,
+      },
+    });
+  }
 
   async function refreshDisputeEvidence() {
     if (!hasValidRoomCode) {
@@ -1033,6 +1098,13 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
       } finally {
         window.clearTimeout(abortId);
       }
+      void dispatchMatchPushNotification({
+        wallets: [rematchOpponent],
+        title: "Rematch requested",
+        body: `Room #${roomCode}: your opponent requested a rematch with same stake.`,
+        tag: `rematch-requested-${oldMatchId}`,
+        data: { type: "rematch_requested", newRoomCode },
+      });
 
       const nextParams = new URLSearchParams();
       nextParams.set("t", rematchTimeframe);
@@ -1058,6 +1130,13 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "join", actor: address.toLowerCase() }),
       }).catch(() => undefined);
+      void dispatchMatchPushNotification({
+        wallets: [rematchIntent.requestedBy],
+        title: "Rematch accepted",
+        body: `Room #${roomCode}: opponent accepted your rematch.`,
+        tag: `rematch-accepted-${rematchIntent.oldMatchId}`,
+        data: { type: "rematch_accepted", newRoomCode: rematchIntent.newRoomCode },
+      });
     }
     const params = new URLSearchParams();
     params.set("auto", "1");
@@ -1076,6 +1155,13 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "cancel", actor: address?.toLowerCase() ?? "" }),
     }).catch(() => undefined);
+    void dispatchMatchPushNotification({
+      wallets: [rematchIntent.requestedBy],
+      title: "Rematch cancelled",
+      body: `Room #${roomCode}: rematch request was cancelled.`,
+      tag: `rematch-cancelled-${rematchIntent.oldMatchId}`,
+      data: { type: "rematch_cancelled" },
+    });
     await refreshRematchIntent();
   }
 
@@ -1285,7 +1371,16 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
         functionName: "proposeWinner",
         args: [matchId, address] as const,
       }),
-      () => setShowAwaitingOpponent(true),
+      () => {
+        setShowAwaitingOpponent(true);
+        void dispatchMatchPushNotification({
+          wallets: [isCreator ? opponent : creator],
+          title: "Result submitted",
+          body: `Room #${roomCode}: your opponent submitted a win claim. Accept or dispute.`,
+          tag: `match-result-submitted-${matchId.toString()}`,
+          data: { type: "result_submitted" },
+        });
+      },
     );
   }
 
@@ -1299,6 +1394,15 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
         functionName: "proposeWinner",
         args: [matchId, opponentAddressForLoss] as const,
       }),
+      () => {
+        void dispatchMatchPushNotification({
+          wallets: [opponentAddressForLoss],
+          title: "Opponent accepted loss",
+          body: `Room #${roomCode}: payout is now released to you.`,
+          tag: `match-loss-confirmed-${matchId.toString()}`,
+          data: { type: "loss_confirmed" },
+        });
+      },
     );
   }
 
@@ -1324,6 +1428,13 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
         const starterRole = isCreator ? "creator" : isOpponent ? "opponent" : "unknown";
         void ensureDisputeAutoMessage(matchId.toString(), starterRole);
         void refreshDisputeMessages();
+        void dispatchMatchPushNotification({
+          wallets: [creator, opponent],
+          title: "Dispute started",
+          body: `Room #${roomCode}: dispute opened. Upload evidence in dispute center.`,
+          tag: `match-dispute-started-${matchId.toString()}`,
+          data: { type: "dispute_started", starterRole },
+        });
       },
     );
   }
@@ -1346,6 +1457,13 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
       () => {
         setShowConcedeDisputeConfirm(false);
         setShowDisputePanel(false);
+        void dispatchMatchPushNotification({
+          wallets: [isCreator ? opponent : creator],
+          title: "Dispute conceded",
+          body: `Room #${roomCode}: opponent conceded dispute and funds were released.`,
+          tag: `match-dispute-conceded-${matchId.toString()}`,
+          data: { type: "dispute_conceded" },
+        });
       },
     );
   }
@@ -1412,13 +1530,57 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                 : "Player";
           return {
             wallet,
+            username: walletUsernames[key] ?? null,
+            avatarDataUrl: walletAvatars[key] ?? "",
             role,
             history,
             winRate,
           };
         }),
-    [creator, opponent, historyByWallet],
+    [creator, opponent, historyByWallet, walletUsernames, walletAvatars],
   );
+
+  useEffect(() => {
+    const wallets = Array.from(
+      new Set(
+        [
+          creator,
+          opponent,
+          address,
+          ...disputeMessages
+            .filter((item) => item.senderRole === "player")
+            .map((item) => item.senderAddress),
+          ...disputeEvidence.map((item) => item.uploader),
+          ...historyRows.map((row) => row.wallet),
+        ]
+          .filter((wallet): wallet is string => Boolean(wallet))
+          .map((wallet) => wallet.toLowerCase())
+          .filter((wallet) => /^0x[a-f0-9]{40}$/.test(wallet)),
+      ),
+    );
+    if (wallets.length === 0) return;
+
+    let cancelled = false;
+    async function run() {
+      const profiles = await loadWalletProfiles(wallets);
+      if (cancelled) return;
+      const next: Record<string, string> = {};
+      const nextAvatars: Record<string, string> = {};
+      for (const [wallet, profile] of Object.entries(profiles)) {
+        const username = profile?.username?.trim();
+        const avatar = profile?.avatarDataUrl?.trim();
+        if (username) next[wallet] = username;
+        if (avatar) nextAvatars[wallet] = avatar;
+      }
+      setWalletUsernames((previous) => ({ ...previous, ...next }));
+      setWalletAvatars((previous) => ({ ...previous, ...nextAvatars }));
+    }
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [address, creator, opponent, disputeEvidence, disputeMessages, historyRows]);
 
   useEffect(() => {
     if ((statusNum === 1 || statusNum === 2) && opponent) {
@@ -1428,6 +1590,81 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     }
     return;
   }, [statusNum, opponent]);
+
+  useEffect(() => {
+    if (!hasValidRoomCode || !matchExists || typeof statusNum !== "number") return;
+
+    const current = {
+      statusNum,
+      proposedWinner:
+        proposedWinner && proposedWinner.toLowerCase() !== zeroAddress ? proposedWinner.toLowerCase() : null,
+      opponentPaid: Boolean(opponentPaid),
+      resolvedWinner:
+        resolvedWinner && resolvedWinner.toLowerCase() !== zeroAddress ? resolvedWinner.toLowerCase() : null,
+    };
+    const previous = notificationStateRef.current;
+    notificationStateRef.current = current;
+    if (!previous) return;
+
+    const roomTitle = `Room #${roomCode}`;
+    const isCurrentWinner = Boolean(address && current.proposedWinner === address.toLowerCase());
+
+    if ((statusNum === 1 || statusNum === 2) && (previous.statusNum === 0 || !previous.opponentPaid) && current.opponentPaid) {
+      void showBrowserNotification("Match is about to start", {
+        body: `${roomTitle}: both players are now funded.`,
+        tag: `match-starting-${matchId.toString()}`,
+        url: matchPagePath,
+      });
+    }
+
+    if (statusNum === 3 && current.proposedWinner && current.proposedWinner !== previous.proposedWinner) {
+      if (isCurrentWinner) {
+        void showBrowserNotification("Result submitted", {
+          body: `${roomTitle}: waiting for opponent to accept or dispute.`,
+          tag: `match-result-submitted-${matchId.toString()}`,
+          url: matchPagePath,
+        });
+      } else {
+        void showBrowserNotification("Opponent submitted result", {
+          body: `${roomTitle}: review outcome and accept or dispute.`,
+          tag: `match-result-review-${matchId.toString()}`,
+          url: matchPagePath,
+          requireInteraction: true,
+        });
+      }
+    }
+
+    if (statusNum === 4 && previous.statusNum !== 4) {
+      void showBrowserNotification("Dispute opened", {
+        body: `${roomTitle}: upload evidence in dispute center.`,
+        tag: `match-dispute-${matchId.toString()}`,
+        url: `${matchPagePath}?panel=dispute`,
+        requireInteraction: true,
+      });
+    }
+
+    if (statusNum === 5 && previous.statusNum !== 5) {
+      const resolutionText = resolvedWinnerLabel === "Refunded" ? "Dispute resolved with refund." : `Winner: ${resolvedWinnerLabel}.`;
+      void showBrowserNotification("Match resolved", {
+        body: `${roomTitle}: ${resolutionText}`,
+        tag: `match-resolved-${matchId.toString()}`,
+        url: matchPagePath,
+        requireInteraction: true,
+      });
+    }
+  }, [
+    address,
+    hasValidRoomCode,
+    matchExists,
+    matchId,
+    matchPagePath,
+    opponentPaid,
+    proposedWinner,
+    resolvedWinner,
+    resolvedWinnerLabel,
+    roomCode,
+    statusNum,
+  ]);
 
   useEffect(() => {
     if (statusNum !== 3 && statusNum !== 4) return;
@@ -1562,10 +1799,14 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     if (!adminResolutionMessage) return null;
     const winner = resolvedWinner?.toLowerCase();
     if (!winner || winner === zeroAddress) return "both players (refund)";
-    if (creator && winner === creator.toLowerCase()) return "creator";
-    if (opponent && winner === opponent.toLowerCase()) return "opponent";
-    return shortAddress(resolvedWinner);
-  }, [adminResolutionMessage, resolvedWinner, creator, opponent]);
+    if (creator && winner === creator.toLowerCase()) {
+      return usernameForWallet(creator) ?? "creator";
+    }
+    if (opponent && winner === opponent.toLowerCase()) {
+      return usernameForWallet(opponent) ?? "opponent";
+    }
+    return displayNameForWallet(resolvedWinner);
+  }, [adminResolutionMessage, resolvedWinner, creator, opponent, walletUsernames]);
   const rematchPendingForCounterparty = Boolean(
     statusNum === 5 &&
       rematchIntent &&
@@ -1604,21 +1845,36 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   async function joinAndLockStake() {
     if (!stakeValue || !escrowAddress || isJoinActionPending) return;
     setIsJoinActionPending(true);
-    await runTx(() =>
-      writeWithNonce({
-        address: escrowAddress!,
-        abi: escrowAbi,
-        functionName: "joinMatch",
-        args: [matchId],
-        value: stakeValue,
-      })
+    await runTx(
+      () =>
+        writeWithNonce({
+          address: escrowAddress!,
+          abi: escrowAbi,
+          functionName: "joinMatch",
+          args: [matchId],
+          value: stakeValue,
+        }),
+      () => {
+        void dispatchMatchPushNotification({
+          wallets: [creator],
+          title: "Opponent joined match",
+          body: `Room #${roomCode}: opponent locked stake. Match is about to start.`,
+          tag: `match-joined-${matchId.toString()}`,
+          data: { type: "match_joined" },
+        });
+        void showBrowserNotification("Stake locked", {
+          body: `Room #${roomCode}: you joined and locked your stake.`,
+          tag: `match-join-self-${matchId.toString()}`,
+          url: matchPagePath,
+        });
+      },
     );
   }
 
   function handleJoinClick() {
     if (!canShowJoinCTA || typeof stake !== "bigint" || isJoinActionPending) return;
     if (isConnected && !opponentIsOpen && !isOpponent) {
-      setErr(`This match is reserved for opponent wallet ${shortAddress(opponent)}.`);
+      setErr(`This match is reserved for opponent ${displayNameForWallet(opponent)}.`);
       return;
     }
     if (!isConnected) {
@@ -2194,7 +2450,13 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                 <div className="flex flex-col gap-1 border-b border-white/5 pb-2 sm:flex-row sm:items-center sm:justify-between">
                   <span className="text-gray-500">Creator</span>
                   <span className="flex flex-wrap items-center gap-2 sm:justify-end">
-                    <span className="text-sky-400 break-all sm:text-right">{creator ?? "-"}</span>
+                    {creator && avatarForWallet(creator) && (
+                      <img src={avatarForWallet(creator)} alt={creatorDisplayName} className="h-6 w-6 rounded-full border border-white/10 object-cover" />
+                    )}
+                    <span className="text-sky-400 break-all sm:text-right">{creatorDisplayName}</span>
+                    {creator && (
+                      <span className="text-[10px] text-gray-500">{shortAddress(creator)}</span>
+                    )}
                     {isCreator && (
                       <span className="inline-flex items-center rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-sky-200">
                         You
@@ -2205,7 +2467,13 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                 <div className="flex flex-col gap-1 border-b border-white/5 pb-2 sm:flex-row sm:items-center sm:justify-between">
                   <span className="text-gray-500">Opponent</span>
                   <span className="flex flex-wrap items-center gap-2 sm:justify-end">
-                    <span className="text-sky-400 break-all sm:text-right">{opponent ?? "-"}</span>
+                    {opponent && avatarForWallet(opponent) && (
+                      <img src={avatarForWallet(opponent)} alt={opponentDisplayName} className="h-6 w-6 rounded-full border border-white/10 object-cover" />
+                    )}
+                    <span className="text-sky-400 break-all sm:text-right">{opponentDisplayName}</span>
+                    {opponent && (
+                      <span className="text-[10px] text-gray-500">{shortAddress(opponent)}</span>
+                    )}
                     {isOpponent && (
                       <span className="inline-flex items-center rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-200">
                         You
@@ -2231,7 +2499,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                 </div>
                 <div className="flex flex-col gap-1 border-b border-white/5 pb-2 sm:flex-row sm:items-center sm:justify-between">
                   <span className="text-gray-500">Proposed Winner</span>
-                  <span className="text-white break-all sm:text-right">{proposedWinner ?? "-"}</span>
+                  <span className="text-white break-all sm:text-right">{proposedWinnerDisplayName}</span>
                 </div>
                 <div className="flex flex-col gap-1 border-b border-white/5 pb-2 sm:flex-row sm:items-center sm:justify-between">
                   <span className="text-gray-500">Joined At</span>
@@ -2286,7 +2554,12 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                       <span className="rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-[10px] uppercase tracking-wider text-sky-200">
                         {row.role}
                       </span>
-                      <span className="font-mono text-xs text-sky-300">{shortAddress(row.wallet)}</span>
+                      <span className="flex items-center gap-2 text-xs text-sky-300">
+                        {row.avatarDataUrl ? (
+                          <img src={row.avatarDataUrl} alt={row.username ?? shortAddress(row.wallet)} className="h-6 w-6 rounded-full border border-white/10 object-cover" />
+                        ) : null}
+                        <span>{row.username ?? shortAddress(row.wallet)}</span>
+                      </span>
                     </div>
                     <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
                       <div className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-gray-300">
@@ -2337,7 +2610,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                   <thead className="text-[10px] uppercase tracking-[0.2em] text-gray-500">
                     <tr className="border-b border-white/10">
                       <th className="px-3 py-3 text-left">Role</th>
-                      <th className="px-3 py-3 text-left">Wallet</th>
+                      <th className="px-3 py-3 text-left">Player</th>
                       <th className="px-3 py-3 text-center">Wins</th>
                       <th className="px-3 py-3 text-center">Losses</th>
                       <th className="px-3 py-3 text-center">Win%</th>
@@ -2365,9 +2638,14 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                             {row.role}
                           </span>
                         </td>
-                        <td className="px-3 py-3 font-mono text-sky-300">
-                          <div className="hidden sm:block">{row.wallet}</div>
-                          <div className="sm:hidden">{shortAddress(row.wallet)}</div>
+                        <td className="px-3 py-3 text-sky-300">
+                          <div className="flex items-center gap-2 text-sky-200">
+                            {row.avatarDataUrl ? (
+                              <img src={row.avatarDataUrl} alt={row.username ?? shortAddress(row.wallet)} className="h-6 w-6 rounded-full border border-white/10 object-cover" />
+                            ) : null}
+                            <span>{row.username ?? shortAddress(row.wallet)}</span>
+                          </div>
+                          <div className="text-[10px] text-gray-500">{shortAddress(row.wallet)}</div>
                         </td>
                         <td className="px-3 py-3 text-center text-emerald-300 font-semibold">{row.history.wins}</td>
                         <td className="px-3 py-3 text-center text-red-300 font-semibold">{row.history.losses}</td>
@@ -2582,7 +2860,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                                     : isPlayerMessage
                                       ? isSelfPlayer
                                         ? "You"
-                                        : `Player ${shortAddress(message.senderAddress)}`
+                                        : `Player ${displayNameForWallet(message.senderAddress)}`
                                       : "System"}
                                 </span>
                                 <span>{new Date(message.createdAt).toLocaleTimeString()}</span>
@@ -2634,7 +2912,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                 {disputeEvidence.map((item) => (
                   <div key={item.id} className="rounded-2xl border border-white/10 bg-black/40 p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-gray-400">
-                      <span>Uploader: {shortAddress(item.uploader)}</span>
+                      <span>Uploader: {displayNameForWallet(item.uploader)}</span>
                       <span>{new Date(item.createdAt).toLocaleString()}</span>
                     </div>
                     {item.note && <p className="mt-2 text-xs text-gray-300">{item.note}</p>}

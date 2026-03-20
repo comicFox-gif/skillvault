@@ -14,6 +14,7 @@ import {
   getSupportedChainNames,
   isSupportedChainId,
 } from "@/lib/chains";
+import { showBrowserNotification } from "@/lib/notifications";
 
 const escrowAbi = [
   {
@@ -180,6 +181,11 @@ export default function CreateMatchPage() {
 
   useEffect(() => {
     if (!roomCode) return;
+    void showBrowserNotification("Match created", {
+      body: `Room #${roomCode} is ready. Share the invite with your opponent.`,
+      tag: `match-created-${roomCode}`,
+      url: `/matches/${encodeURIComponent(roomCode)}`,
+    });
     const timeParam = encodeURIComponent(timeframe);
     const gameParam = encodeURIComponent(game);
     const platformParam = encodeURIComponent(platform);

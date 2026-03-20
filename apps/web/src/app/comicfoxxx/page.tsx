@@ -12,6 +12,7 @@ import {
   loadDisputeMessages,
   type DisputeMessageItem,
 } from "@/lib/disputeMessages";
+import { loadWalletProfiles } from "@/lib/profile";
 import { decodeMatchCode } from "@/lib/matchCode";
 import {
   getEscrowAddressForChain,
@@ -130,6 +131,7 @@ export default function AdminDisputesPage() {
   const [adminMessageError, setAdminMessageError] = useState<string | null>(null);
   const [showDisputeModal, setShowDisputeModal] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [walletUsernames, setWalletUsernames] = useState<Record<string, string>>({});
   const disputeMessagesRequestSeqRef = useRef(0);
   const normalizedMatchIdInput = matchIdInput.trim();
 
@@ -180,6 +182,11 @@ export default function AdminDisputesPage() {
   );
   const shortAddress = (value?: string) =>
     value ? `${value.slice(0, 6)}...${value.slice(-4)}` : "-";
+  const usernameForWallet = (value?: string) => {
+    if (!value) return null;
+    return walletUsernames[value.toLowerCase()] ?? null;
+  };
+  const displayNameForWallet = (value?: string) => usernameForWallet(value) ?? shortAddress(value);
   const formatFileSize = (sizeBytes: number) => {
     if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) return "0 B";
     if (sizeBytes < 1024) return `${sizeBytes} B`;
@@ -251,6 +258,44 @@ export default function AdminDisputesPage() {
       cancelled = true;
     };
   }, [matchKey, txHash]);
+
+  useEffect(() => {
+    const wallets = Array.from(
+      new Set(
+        [
+          creator,
+          opponent,
+          address,
+          contractAdmin,
+          ...disputeMessages
+            .filter((item) => item.senderRole === "player")
+            .map((item) => item.senderAddress),
+          ...evidenceItems.map((item) => item.uploader),
+        ]
+          .filter((wallet): wallet is string => Boolean(wallet))
+          .map((wallet) => wallet.toLowerCase())
+          .filter((wallet) => /^0x[a-f0-9]{40}$/.test(wallet)),
+      ),
+    );
+    if (wallets.length === 0) return;
+
+    let cancelled = false;
+    async function run() {
+      const profiles = await loadWalletProfiles(wallets);
+      if (cancelled) return;
+      const next: Record<string, string> = {};
+      for (const [wallet, profile] of Object.entries(profiles)) {
+        const username = profile?.username?.trim();
+        if (username) next[wallet] = username;
+      }
+      setWalletUsernames((previous) => ({ ...previous, ...next }));
+    }
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [address, contractAdmin, creator, opponent, disputeMessages, evidenceItems]);
 
   useEffect(() => {
     if (statusNum !== 4 || !matchKey) return;
@@ -336,10 +381,10 @@ export default function AdminDisputesPage() {
       if (matchKey) {
         const winnerLabel =
           winner && creator && winner.toLowerCase() === creator.toLowerCase()
-            ? "creator"
+            ? (usernameForWallet(creator) ?? "creator")
             : winner && opponent && winner.toLowerCase() === opponent.toLowerCase()
-              ? "opponent"
-              : shortAddress(winner);
+              ? (usernameForWallet(opponent) ?? "opponent")
+              : displayNameForWallet(winner);
         const resolutionText = refundBoth
           ? "Dispute resolved by admin: both players were refunded. Match is closed."
           : `Dispute resolved by admin: payout released to ${winnerLabel}. Match is closed.`;
@@ -547,7 +592,7 @@ export default function AdminDisputesPage() {
             ) : (
               <>
                 <div className="rounded-2xl border border-white/10 bg-black/40 px-3 py-2 text-xs text-gray-300">
-                  {shortAddress(address)}
+                  {displayNameForWallet(address)}
                 </div>
                 <button
                   type="button"
@@ -609,7 +654,9 @@ export default function AdminDisputesPage() {
               <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                 <div className="text-gray-400">
                   Contract admin wallet:{" "}
-                  <span className="font-mono text-sky-300 break-all">{contractAdmin ?? "Loading..."}</span>
+                  <span className="font-mono text-sky-300 break-all">
+                    {contractAdmin ? displayNameForWallet(contractAdmin) : "Loading..."}
+                  </span>
                 </div>
                 <div
                   className={
@@ -738,15 +785,15 @@ export default function AdminDisputesPage() {
               </div>
               <div className="flex justify-between border-b border-white/5 pb-2">
                 <span className="text-gray-500">Creator</span>
-                <span className="break-all text-sky-400">{creator ?? "-"}</span>
+                <span className="break-all text-sky-400">{creator ? displayNameForWallet(creator) : "-"}</span>
               </div>
               <div className="flex justify-between border-b border-white/5 pb-2">
                 <span className="text-gray-500">Opponent</span>
-                <span className="break-all text-sky-400">{opponent ?? "-"}</span>
+                <span className="break-all text-sky-400">{opponent ? displayNameForWallet(opponent) : "-"}</span>
               </div>
               <div className="flex justify-between border-b border-white/5 pb-2">
                 <span className="text-gray-500">Proposed Winner</span>
-                <span className="break-all">{proposedWinner ?? "-"}</span>
+                <span className="break-all">{proposedWinner ? displayNameForWallet(proposedWinner) : "-"}</span>
               </div>
               <div className="flex justify-between border-b border-white/5 pb-2">
                 <span className="text-gray-500">Joined At</span>
@@ -891,7 +938,7 @@ export default function AdminDisputesPage() {
                               {isAdminMessage
                                 ? "Admin"
                                 : isPlayerMessage
-                                  ? `Player ${shortAddress(message.senderAddress)}`
+                                  ? `Player ${displayNameForWallet(message.senderAddress)}`
                                   : "System"}
                             </span>
                             <span>{new Date(message.createdAt).toLocaleString()}</span>
@@ -921,7 +968,7 @@ export default function AdminDisputesPage() {
                       className="rounded-2xl border border-white/10 bg-slate-900/70 p-3"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-gray-400">
-                        <span>Uploader: {shortAddress(item.uploader)}</span>
+                        <span>Uploader: {displayNameForWallet(item.uploader)}</span>
                         <span>{new Date(item.createdAt).toLocaleString()}</span>
                       </div>
                       {item.note && (
@@ -1028,7 +1075,7 @@ export default function AdminDisputesPage() {
                                     {isAdminMessage
                                       ? "Admin"
                                       : isPlayerMessage
-                                        ? `Player ${shortAddress(message.senderAddress)}`
+                                        ? `Player ${displayNameForWallet(message.senderAddress)}`
                                         : "System"}
                                   </span>
                                   <span>{new Date(message.createdAt).toLocaleString()}</span>
@@ -1086,7 +1133,7 @@ export default function AdminDisputesPage() {
                           evidenceItems.map((item) => (
                             <div key={item.id} className="rounded-xl border border-white/10 bg-slate-900/70 p-3">
                               <div className="flex items-center justify-between gap-2 text-[11px] text-gray-400">
-                                <span>{shortAddress(item.uploader)}</span>
+                                <span>{displayNameForWallet(item.uploader)}</span>
                                 <span>{new Date(item.createdAt).toLocaleString()}</span>
                               </div>
                               {item.note && <p className="mt-2 text-xs text-gray-300">{item.note}</p>}
