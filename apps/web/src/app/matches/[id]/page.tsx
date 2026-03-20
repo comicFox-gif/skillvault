@@ -1551,7 +1551,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
             .filter((item) => item.senderRole === "player")
             .map((item) => item.senderAddress),
           ...disputeEvidence.map((item) => item.uploader),
-          ...historyRows.map((row) => row.wallet),
+          ...Object.keys(historyByWallet),
         ]
           .filter((wallet): wallet is string => Boolean(wallet))
           .map((wallet) => wallet.toLowerCase())
@@ -1572,15 +1572,35 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
         if (username) next[wallet] = username;
         if (avatar) nextAvatars[wallet] = avatar;
       }
-      setWalletUsernames((previous) => ({ ...previous, ...next }));
-      setWalletAvatars((previous) => ({ ...previous, ...nextAvatars }));
+      setWalletUsernames((previous) => {
+        let changed = false;
+        const merged = { ...previous };
+        for (const [wallet, username] of Object.entries(next)) {
+          if (merged[wallet] !== username) {
+            merged[wallet] = username;
+            changed = true;
+          }
+        }
+        return changed ? merged : previous;
+      });
+      setWalletAvatars((previous) => {
+        let changed = false;
+        const merged = { ...previous };
+        for (const [wallet, avatar] of Object.entries(nextAvatars)) {
+          if (merged[wallet] !== avatar) {
+            merged[wallet] = avatar;
+            changed = true;
+          }
+        }
+        return changed ? merged : previous;
+      });
     }
 
     void run();
     return () => {
       cancelled = true;
     };
-  }, [address, creator, opponent, disputeEvidence, disputeMessages, historyRows]);
+  }, [address, creator, opponent, disputeEvidence, disputeMessages, historyByWallet]);
 
   useEffect(() => {
     if ((statusNum === 1 || statusNum === 2) && opponent) {
