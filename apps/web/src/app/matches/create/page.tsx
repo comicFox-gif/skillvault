@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { useAccount, useChainId, usePublicClient, useWriteContract } from "wagmi";
+import { useAccount, useChainId, usePublicClient, useSwitchChain, useWriteContract } from "wagmi";
 import { decodeEventLog, isAddress, parseEther, type Address } from "viem";
 import { encodeMatchCode } from "@/lib/matchCode";
 import {
@@ -13,6 +13,7 @@ import {
   getNativeSymbolForChain,
   getSupportedChainNames,
   isSupportedChainId,
+  supportedChainConfigs,
 } from "@/lib/chains";
 import { showBrowserNotification } from "@/lib/notifications";
 
@@ -129,11 +130,17 @@ export default function CreateMatchPage() {
   const { isConnected, address } = useAccount();
   const chainId = useChainId();
   const publicClient = usePublicClient();
+  const { switchChainAsync, isPending: switchingChain } = useSwitchChain();
   const { writeContractAsync } = useWriteContract();
 
   const escrowAddress = getEscrowAddressForChain(chainId);
   const nativeSymbol = getNativeSymbolForChain(chainId);
   const explorerBaseUrl = getExplorerUrlForChain(chainId).replace(/\/$/, "");
+  const preferredChainId = useMemo(() => {
+    const configured = supportedChainConfigs.find((chain) => Boolean(chain.escrowAddress));
+    return configured?.id ?? supportedChainConfigs[0]?.id ?? chainId;
+  }, [chainId]);
+  const chainReadyForCreate = Boolean(isSupportedChainId(chainId) && escrowAddress);
 
   const [stakeEth, setStakeEth] = useState("0.01");
   const [opponentAddress, setOpponentAddress] = useState<Address>(
@@ -156,10 +163,14 @@ export default function CreateMatchPage() {
   const [pendingStakeWei, setPendingStakeWei] = useState<bigint | null>(null);
   const [pendingOpponent, setPendingOpponent] = useState<Address | null>(null);
   const [autoRechecks, setAutoRechecks] = useState(0);
+  const [finalizeStatusText, setFinalizeStatusText] = useState("");
+  const [lastCheckAt, setLastCheckAt] = useState<number | null>(null);
   const [autoRematchRequested, setAutoRematchRequested] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
   const openConnectRef = useRef<(() => void) | null>(null);
   const autoRematchConnectPromptedRef = useRef(false);
   const autoRematchTriggeredRef = useRef(false);
+  const createActionLockRef = useRef(false);
 
   const roomCode = useMemo(() => {
     if (!matchId) return null;
@@ -175,8 +186,9 @@ export default function CreateMatchPage() {
     const gameParam = encodeURIComponent(game);
     const platformParam = encodeURIComponent(platform);
     const joinParam = encodeURIComponent(joinMins);
-    return `/matches/${encodeURIComponent(expectedRoomCode)}?t=${timeParam}&g=${gameParam}&p=${platformParam}&j=${joinParam}`;
-  }, [expectedRoomCode, timeframe, game, platform, joinMins]);
+    const chainParam = encodeURIComponent(String(chainId));
+    return `/matches/${encodeURIComponent(expectedRoomCode)}?t=${timeParam}&g=${gameParam}&p=${platformParam}&j=${joinParam}&c=${chainParam}&pending=1`;
+  }, [expectedRoomCode, timeframe, game, platform, joinMins, chainId]);
   const txExplorerUrl = txHash ? `${explorerBaseUrl}/tx/${txHash}` : null;
 
   useEffect(() => {
@@ -190,12 +202,13 @@ export default function CreateMatchPage() {
     const gameParam = encodeURIComponent(game);
     const platformParam = encodeURIComponent(platform);
     const joinParam = encodeURIComponent(joinMins);
-    const target = `/matches/${encodeURIComponent(roomCode)}?t=${timeParam}&g=${gameParam}&p=${platformParam}&j=${joinParam}`;
+    const chainParam = encodeURIComponent(String(chainId));
+    const target = `/matches/${encodeURIComponent(roomCode)}?t=${timeParam}&g=${gameParam}&p=${platformParam}&j=${joinParam}&c=${chainParam}&pending=1`;
     const timeoutId = window.setTimeout(() => {
       router.push(target);
     }, 450);
     return () => window.clearTimeout(timeoutId);
-  }, [roomCode, timeframe, game, platform, joinMins, router]);
+  }, [roomCode, timeframe, game, platform, joinMins, chainId, router]);
 
   useEffect(() => {
     if (prefillApplied) return;
@@ -236,10 +249,17 @@ export default function CreateMatchPage() {
     if (autoRechecks >= AUTO_RECHECK_MAX) return;
     const timeoutId = window.setTimeout(() => {
       setAutoRechecks((count) => count + 1);
+      setFinalizeStatusText("Auto-checking chain for room code...");
       void resolveMatchId(txHash as `0x${string}`, expectedMatchId, pendingStakeWei, pendingOpponent);
     }, 6000);
     return () => window.clearTimeout(timeoutId);
   }, [txHash, roomCode, checkingReceipt, expectedMatchId, pendingStakeWei, pendingOpponent, autoRechecks]);
+
+  useEffect(() => {
+    if (roomCode || createStatus === "idle") {
+      createActionLockRef.current = false;
+    }
+  }, [roomCode, createStatus]);
 
   useEffect(() => {
     if (!matchId || typeof window === "undefined") return;
@@ -270,20 +290,35 @@ export default function CreateMatchPage() {
     void onCreate();
   }, [prefillApplied, autoRematchRequested, roomCode, txHash, creating, createStatus, isConnected]);
 
+  async function handleSwitchNetwork() {
+    setSwitchError(null);
+    if (!isConnected) {
+      openConnectRef.current?.();
+      return;
+    }
+    try {
+      await switchChainAsync({ chainId: preferredChainId });
+    } catch (switchErr: any) {
+      setSwitchError(
+        switchErr?.shortMessage ||
+          switchErr?.message ||
+          "Failed to switch network automatically. Please switch network in wallet.",
+      );
+    }
+  }
+
   async function onCreate() {
+    if (createActionLockRef.current) return;
     if (creating) return;
     if (txHash && !roomCode) {
       setError("A previous match transaction is still finalizing. Wait, or use Open Provisional Room.");
       return;
     }
-    if (!isSupportedChainId(chainId)) {
-      setError(`Unsupported network. Switch wallet to one of: ${getSupportedChainNames()}.`);
+    if (!chainReadyForCreate) {
+      setError(`Wrong network. Switch wallet to one of: ${getSupportedChainNames()}.`);
       return;
     }
-    if (!escrowAddress) {
-      setError("Escrow address is missing for this network. Configure per-chain escrow env variables.");
-      return;
-    }
+    const activeEscrowAddress = escrowAddress as Address;
     if (!publicClient || !address) {
       setError("Wallet client not ready. Please reconnect wallet and try again.");
       return;
@@ -294,8 +329,12 @@ export default function CreateMatchPage() {
     setPendingStakeWei(null);
     setPendingOpponent(null);
     setAutoRechecks(0);
+    setFinalizeStatusText("");
+    setLastCheckAt(null);
     setCreating(true);
     setCreateStatus("signing");
+    createActionLockRef.current = true;
+    let keepActionLocked = false;
 
     try {
       const [latestNonce, pendingNonce] = await Promise.all([
@@ -306,15 +345,15 @@ export default function CreateMatchPage() {
         throw new Error("You have a pending wallet transaction. In MetaMask, Speed Up or Cancel it first.");
       }
 
-      const bytecode = await publicClient.getBytecode({ address: escrowAddress });
+      const bytecode = await publicClient.getBytecode({ address: activeEscrowAddress });
       if (!bytecode || bytecode === "0x") {
         throw new Error(
-          `Escrow contract not found on this network (chainId=${chainId}) at ${escrowAddress}. Deploy escrow for this chain and update per-chain escrow env.`,
+          `Escrow contract not found on this network (chainId=${chainId}) at ${activeEscrowAddress}. Deploy escrow for this chain and update per-chain escrow env.`,
         );
       }
       const nextId = await withTimeout(
         publicClient.readContract({
-          address: escrowAddress,
+          address: activeEscrowAddress,
           abi: escrowAbi,
           functionName: "nextMatchId",
           args: [],
@@ -345,7 +384,7 @@ export default function CreateMatchPage() {
         // fallback to wallet defaults if fee estimation is unavailable
       }
       const request: any = {
-        address: escrowAddress,
+        address: activeEscrowAddress,
         abi: escrowAbi,
         functionName: "createMatch",
         args: [opponentAddress, stakeWei, joinBySeconds, confirmBySeconds] as const,
@@ -362,22 +401,35 @@ export default function CreateMatchPage() {
 
       setTxHash(hash);
       setCreateStatus("pending");
-      void resolveMatchId(hash, expectedId, stakeWei, opponentAddress);
+      keepActionLocked = true;
+      setFinalizeStatusText("Transaction submitted. Waiting for chain confirmation...");
+      if (expectedId) {
+        // Move user forward immediately; room page will continue reading live chain state.
+        setMatchId(expectedId);
+      } else {
+        setFinalizeStatusText("Transaction confirmed. Resolving room code...");
+        void resolveMatchId(hash, expectedId, stakeWei, opponentAddress);
+      }
     } catch (e: any) {
       const message = e?.shortMessage || e?.message || String(e);
       if (String(message).toLowerCase().includes("transaction already imported")) {
         setError(
           "Transaction already imported by RPC. Check wallet activity for pending tx, then use Open Provisional Room.",
         );
-        setCreateStatus("pending");
+        setCreateStatus("idle");
+        setFinalizeStatusText("");
       } else {
         setError(message);
         setCreateStatus("idle");
         setPendingStakeWei(null);
         setPendingOpponent(null);
+        setFinalizeStatusText("");
       }
     } finally {
       setCreating(false);
+      if (!keepActionLocked) {
+        createActionLockRef.current = false;
+      }
     }
   }
 
@@ -393,6 +445,8 @@ export default function CreateMatchPage() {
     }
     if (checkingReceipt) return;
     setCheckingReceipt(true);
+    setLastCheckAt(Date.now());
+    setFinalizeStatusText("Checking transaction receipt...");
     let resolved = false;
     try {
       let latestHash = hash;
@@ -404,6 +458,7 @@ export default function CreateMatchPage() {
       }
       if (!receipt) {
         try {
+          setFinalizeStatusText("Waiting for block confirmation...");
           receipt = await publicClient.waitForTransactionReceipt({
             hash,
             timeout: RECEIPT_WAIT_TIMEOUT_MS,
@@ -423,36 +478,45 @@ export default function CreateMatchPage() {
       if (receipt) {
         if (receipt.status === "reverted") {
           setError("Transaction reverted on-chain. Check stake amount and retry.");
+          setFinalizeStatusText("");
+          setCreateStatus("idle");
           return;
         }
         const matchedId = extractMatchIdFromReceipt(receipt);
         if (matchedId) {
           setMatchId(matchedId);
           setError(null);
+          setFinalizeStatusText("Room ready. Redirecting...");
           resolved = true;
         } else if (expectedId) {
           // Receipt is confirmed but event parsing can fail on some RPC/indexers.
           // Use the pre-read nextMatchId snapshot as deterministic fallback.
           setMatchId(expectedId);
           setError(null);
+          setFinalizeStatusText("Confirmed. Finalizing room...");
           resolved = true;
         }
       } else if (latestHash !== hash) {
         setTxHash(latestHash);
       }
 
+      if (!resolved) setFinalizeStatusText("Receipt not indexed yet. Checking next match id...");
       if (!resolved && expectedId) resolved = await pollNextMatchId(expectedId);
+      if (!resolved) setFinalizeStatusText("Checking creator snapshot...");
       if (!resolved && expectedId && address) resolved = await pollMatchByCreator(expectedId, address);
+      if (!resolved) setFinalizeStatusText("Scanning latest matches...");
       if (!resolved && address && typeof stakeWei === "bigint" && opponent) {
         const discovered = await findRecentCreatedMatchId(address, opponent, stakeWei, expectedId);
         if (discovered) {
           setMatchId(discovered);
           setError(null);
+          setFinalizeStatusText("Room resolved from latest matches.");
           resolved = true;
         }
       }
       if (!resolved) {
         setError("Transaction is still pending. Click Check Again in a few seconds.");
+        setFinalizeStatusText("Still pending. Auto-check will continue...");
       }
     } finally {
       setCheckingReceipt(false);
@@ -646,6 +710,22 @@ export default function CreateMatchPage() {
           }}
         </ConnectButton.Custom>
 
+        {!chainReadyForCreate && (
+          <div className="mb-6 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-100">
+            <div className="font-bold uppercase tracking-wider">Wrong network for match escrow.</div>
+            <div className="mt-1">Switch wallet to the required chain before creating a match.</div>
+            <button
+              type="button"
+              onClick={() => void handleSwitchNetwork()}
+              disabled={switchingChain}
+              className="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/20 px-4 py-2 text-xs font-bold uppercase tracking-wider text-amber-100 disabled:opacity-60"
+            >
+              {switchingChain ? "Switching..." : "Switch Network"}
+            </button>
+            {switchError ? <div className="mt-2 text-[11px] text-red-200">{switchError}</div> : null}
+          </div>
+        )}
+
         <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/10 via-white/5 to-transparent p-[1px] shadow-[0_20px_60px_rgba(0,0,0,0.55)]">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_10%,rgba(56,189,248,0.18),transparent_45%),radial-gradient(circle_at_90%_90%,rgba(59,130,246,0.12),transparent_45%)]" />
           <div className="relative rounded-[22px] bg-slate-900/90 p-5 backdrop-blur-xl sm:p-6 lg:p-7">
@@ -757,7 +837,7 @@ export default function CreateMatchPage() {
                       }
                       void onCreate();
                     }}
-                    disabled={!escrowAddress || creating || Boolean(txHash && !roomCode)}
+                    disabled={!chainReadyForCreate || creating || createStatus === "pending" || Boolean(txHash && !roomCode)}
                   >
                     {creating ? "Creating Match..." : txHash && !roomCode ? "Finalizing..." : "Initialize Match"}
                   </button>
@@ -821,9 +901,14 @@ export default function CreateMatchPage() {
                 <div className="relative w-full max-w-md overflow-hidden rounded-3xl border border-sky-500/30 bg-slate-900/95 p-5 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl sm:p-6">
                   <div className="mb-4 text-xs uppercase tracking-[0.35em] text-sky-400/80">Match Created</div>
                   <h3 className="text-2xl font-semibold text-white">Finalizing match...</h3>
-                  <p className="mt-2 text-sm text-gray-400">
-                    We sent the transaction. Waiting for confirmation to fetch your room code.
-                  </p>
+                    <p className="mt-2 text-sm text-gray-400">
+                      We sent the transaction. Waiting for confirmation to fetch your room code.
+                    </p>
+                    {finalizeStatusText ? (
+                      <div className="mt-3 rounded-xl border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-xs text-sky-100">
+                        {finalizeStatusText}
+                      </div>
+                    ) : null}
 
                   <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
                     {txHash && (
@@ -852,6 +937,9 @@ export default function CreateMatchPage() {
                         setPendingOpponent(null);
                         setCreateStatus("idle");
                         setCheckingReceipt(false);
+                        setFinalizeStatusText("");
+                        setLastCheckAt(null);
+                        createActionLockRef.current = false;
                       }}
                     >
                       Close
@@ -891,6 +979,11 @@ export default function CreateMatchPage() {
                       <div className="text-[10px] text-gray-400">
                         Auto-check attempts: {Math.min(autoRechecks, AUTO_RECHECK_MAX)}/{AUTO_RECHECK_MAX}
                       </div>
+                      {lastCheckAt ? (
+                        <div className="text-[10px] text-gray-500">
+                          Last checked: {new Date(lastCheckAt).toLocaleTimeString()}
+                        </div>
+                      ) : null}
                     </div>
                   )}
                 </div>

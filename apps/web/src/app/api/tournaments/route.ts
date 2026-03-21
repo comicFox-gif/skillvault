@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createTournament, listTournaments } from "@/lib/server/tournamentStore";
+import { checkRateLimit } from "@/lib/server/rateLimit";
 
 export const runtime = "nodejs";
 
@@ -24,6 +25,19 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const limit = checkRateLimit({
+      request,
+      key: "tournaments:create:post",
+      max: 8,
+      windowMs: 60_000,
+    });
+    if (!limit.ok) {
+      return NextResponse.json(
+        { error: `Too many tournament create requests. Retry in ${limit.retryAfterSec}s.` },
+        { status: 429, headers: { "Retry-After": String(limit.retryAfterSec) } },
+      );
+    }
+
     const payload = (await request.json().catch(() => ({}))) as {
       title?: string;
       game?: string;

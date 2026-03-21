@@ -32,7 +32,8 @@ export function encodeMatchCode(matchId: bigint | number | string): string {
     throw new Error("Match ID must be non-negative");
   }
   if (id >= ROOM_CODE_MOD) {
-    throw new Error("Match ID is out of 6-digit room-code range.");
+    // Fallback to direct numeric id once contract ids exceed 6-digit reversible range.
+    return id.toString();
   }
   const code = modNormalize(id * ROOM_CODE_A + ROOM_CODE_B, ROOM_CODE_MOD);
   return code.toString().padStart(6, "0");

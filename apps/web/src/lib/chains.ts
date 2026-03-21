@@ -5,11 +5,20 @@ type ChainRuntimeConfig = {
   name: string;
   nativeName: string;
   nativeSymbol: string;
-  rpcUrl: string;
+  rpcUrls: string[];
   explorerUrl: string;
   testnet: boolean;
   escrowAddress?: `0x${string}`;
 };
+
+function parseRpcUrls(csv: string | undefined, fallback: string) {
+  const list = String(csv ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (list.length > 0) return Array.from(new Set(list));
+  return [fallback];
+}
 
 const fallbackEscrowAddress = process.env.NEXT_PUBLIC_MATCH_ESCROW_ADDRESS as
   | `0x${string}`
@@ -22,7 +31,10 @@ const polkadot: ChainRuntimeConfig = {
   name: process.env.NEXT_PUBLIC_POLKADOT_CHAIN_NAME || "Polkadot Hub TestNet",
   nativeName: process.env.NEXT_PUBLIC_POLKADOT_NATIVE_NAME || "Polkadot Asset Hub TestNet",
   nativeSymbol: process.env.NEXT_PUBLIC_POLKADOT_NATIVE_SYMBOL || "PAS",
-  rpcUrl: process.env.NEXT_PUBLIC_POLKADOT_RPC_URL || "https://eth-rpc-testnet.polkadot.io/",
+  rpcUrls: parseRpcUrls(
+    process.env.NEXT_PUBLIC_POLKADOT_RPC_URLS || process.env.NEXT_PUBLIC_POLKADOT_RPC_URL,
+    "https://eth-rpc-testnet.polkadot.io/",
+  ),
   explorerUrl:
     process.env.NEXT_PUBLIC_POLKADOT_EXPLORER_URL ||
     "https://blockscout-passet-hub.parity-testnet.parity.io/",
@@ -35,8 +47,10 @@ const moonbase: ChainRuntimeConfig = {
   name: process.env.NEXT_PUBLIC_MOONBASE_CHAIN_NAME || "Moonbase Alpha",
   nativeName: process.env.NEXT_PUBLIC_MOONBASE_NATIVE_NAME || "DEV",
   nativeSymbol: process.env.NEXT_PUBLIC_MOONBASE_NATIVE_SYMBOL || "DEV",
-  rpcUrl:
-    process.env.NEXT_PUBLIC_MOONBASE_RPC_URL || "https://rpc.api.moonbase.moonbeam.network",
+  rpcUrls: parseRpcUrls(
+    process.env.NEXT_PUBLIC_MOONBASE_RPC_URLS || process.env.NEXT_PUBLIC_MOONBASE_RPC_URL,
+    "https://rpc.api.moonbase.moonbeam.network",
+  ),
   explorerUrl: process.env.NEXT_PUBLIC_MOONBASE_EXPLORER_URL || "https://moonbase.moonscan.io",
   testnet: process.env.NEXT_PUBLIC_MOONBASE_CHAIN_TESTNET !== "false",
   escrowAddress: process.env.NEXT_PUBLIC_MOONBASE_MATCH_ESCROW_ADDRESS as
@@ -55,8 +69,8 @@ export const supportedChains: Chain[] = supportedChainConfigs.map((config) => ({
     decimals: 18,
   },
   rpcUrls: {
-    default: { http: [config.rpcUrl] },
-    public: { http: [config.rpcUrl] },
+    default: { http: config.rpcUrls },
+    public: { http: config.rpcUrls },
   },
   blockExplorers: {
     default: { name: "Explorer", url: config.explorerUrl },
@@ -91,4 +105,9 @@ export function getExplorerUrlForChain(chainId?: number) {
 
 export function getSupportedChainNames() {
   return supportedChainConfigs.map((config) => config.name).join(", ");
+}
+
+export function getRpcUrlsForChain(chainId?: number) {
+  if (chainId === undefined || chainId === null) return [];
+  return getChainConfig(chainId)?.rpcUrls ?? [];
 }

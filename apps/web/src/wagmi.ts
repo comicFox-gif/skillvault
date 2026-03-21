@@ -1,8 +1,8 @@
 import { getDefaultConfig } from "@rainbow-me/rainbowkit";
 import { createConfig } from "wagmi";
 import { injected, metaMask } from "wagmi/connectors";
-import { http, type Chain } from "viem";
-import { supportedChains } from "@/lib/chains";
+import { fallback, http, type Chain } from "viem";
+import { getRpcUrlsForChain, supportedChains } from "@/lib/chains";
 
 const walletConnectProjectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID?.trim();
 const hasWalletConnectId =
@@ -11,8 +11,18 @@ const hasWalletConnectId =
   walletConnectProjectId !== "MISSING_PROJECT_ID";
 
 const chains = supportedChains as [Chain, ...Chain[]];
+
+function buildTransport(chain: Chain) {
+  const urls = getRpcUrlsForChain(chain.id);
+  const transports = (urls.length ? urls : chain.rpcUrls.default.http).map((url) =>
+    http(url, { retryCount: 1, timeout: 15_000 }),
+  );
+  if (transports.length <= 1) return transports[0];
+  return fallback(transports, { rank: false });
+}
+
 const transports = Object.fromEntries(
-  chains.map((chain) => [chain.id, http(chain.rpcUrls.default.http[0])]),
+  chains.map((chain) => [chain.id, buildTransport(chain)]),
 );
 
 export const config = hasWalletConnectId

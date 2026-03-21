@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { addEvidence, listEvidence } from "@/lib/server/disputeStore";
 import { type DisputeEvidenceItem } from "@/lib/disputeEvidence";
+import { checkRateLimit } from "@/lib/server/rateLimit";
 
 export const runtime = "nodejs";
 
@@ -28,6 +29,18 @@ export async function POST(request: Request, context: ParamsContext) {
   try {
     const matchId = await getMatchId(context);
     if (!matchId) return NextResponse.json({ error: "Invalid match id" }, { status: 400 });
+    const limit = checkRateLimit({
+      request,
+      key: `disputes:evidence:${matchId}:post`,
+      max: 6,
+      windowMs: 5 * 60_000,
+    });
+    if (!limit.ok) {
+      return NextResponse.json(
+        { error: `Too many evidence uploads. Retry in ${limit.retryAfterSec}s.` },
+        { status: 429, headers: { "Retry-After": String(limit.retryAfterSec) } },
+      );
+    }
 
     const payload = (await request.json()) as Omit<
       DisputeEvidenceItem,

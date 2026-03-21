@@ -80,6 +80,11 @@ const STATUS: Record<number, string> = {
   6: "Cancelled",
 };
 
+const ADMIN_MAX_SCAN_MATCHES = Math.max(
+  100,
+  Math.min(2000, Number(process.env.NEXT_PUBLIC_ADMIN_MAX_SCAN_MATCHES || "600")),
+);
+
 function formatCountdown(totalSeconds: number | null) {
   if (totalSeconds === null) return "-";
   const safe = Math.max(0, totalSeconds);
@@ -89,6 +94,11 @@ function formatCountdown(totalSeconds: number | null) {
 }
 
 type MatchData = readonly [Address, Address, bigint, bigint, bigint | number, boolean, boolean, Address];
+type AdminResolveIntent = {
+  winner: Address;
+  refundBoth: boolean;
+  label: string;
+};
 
 function normalizeDisputeMessages(items: DisputeMessageItem[]) {
   const byId = new Map<string, DisputeMessageItem>();
@@ -130,6 +140,8 @@ export default function AdminDisputesPage() {
   const [adminMessageDraft, setAdminMessageDraft] = useState("");
   const [adminMessageError, setAdminMessageError] = useState<string | null>(null);
   const [showDisputeModal, setShowDisputeModal] = useState(false);
+  const [resolveIntent, setResolveIntent] = useState<AdminResolveIntent | null>(null);
+  const [isResolving, setIsResolving] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [walletUsernames, setWalletUsernames] = useState<Record<string, string>>({});
   const disputeMessagesRequestSeqRef = useRef(0);
@@ -363,10 +375,37 @@ export default function AdminDisputesPage() {
   }
 
   async function resolveMatch(winner: Address, refundBoth: boolean) {
-    if (!escrowAddress) return;
+    if (!escrowAddress || !publicClient || !data) return;
+    if (!isContractAdmin) {
+      setErr("Connect the escrow admin wallet before resolving disputes.");
+      return;
+    }
+    if (isResolving) return;
     setErr(null);
     setTxHash(null);
+    setIsResolving(true);
     try {
+      const [latestNonce, pendingNonce] = address
+        ? await Promise.all([
+            publicClient.getTransactionCount({ address, blockTag: "latest" }),
+            publicClient.getTransactionCount({ address, blockTag: "pending" }),
+          ])
+        : [0n, 0n];
+      if (pendingNonce > latestNonce) {
+        throw new Error("Admin wallet has a pending transaction. Speed up or cancel it in wallet first.");
+      }
+
+      const latestRow = (await publicClient.readContract({
+        address: escrowAddress,
+        abi: escrowAbi,
+        functionName: "getMatch",
+        args: [matchId] as const,
+      })) as MatchData;
+      const latestStatus = Number(latestRow[4]);
+      if (latestStatus !== 2 && latestStatus !== 3 && latestStatus !== 4) {
+        throw new Error("Match status changed and is no longer eligible for admin resolution.");
+      }
+
       const hash = await writeWithNonce({
         address: escrowAddress,
         abi: escrowAbi,
@@ -374,9 +413,7 @@ export default function AdminDisputesPage() {
         args: [matchId, winner, refundBoth] as const,
       });
       setTxHash(hash);
-      if (publicClient) {
-        await publicClient.waitForTransactionReceipt({ hash });
-      }
+      await publicClient.waitForTransactionReceipt({ hash, timeout: 60_000, pollingInterval: 2_000 });
 
       if (matchKey) {
         const winnerLabel =
@@ -408,9 +445,20 @@ export default function AdminDisputesPage() {
       }
       setShowDisputeModal(false);
       await refreshDisputeMessages();
+      setResolveIntent(null);
     } catch (e: any) {
       setErr(e?.shortMessage || e?.message || String(e));
+    } finally {
+      setIsResolving(false);
     }
+  }
+
+  function requestResolveAction(winner: Address, refundBoth: boolean, label: string) {
+    if (!isContractAdmin) {
+      setErr("Connect the escrow admin wallet before resolving disputes.");
+      return;
+    }
+    setResolveIntent({ winner, refundBoth, label });
   }
 
   async function loadDisputes() {
@@ -439,7 +487,8 @@ export default function AdminDisputesPage() {
       });
 
       const count = Number(nextMatchId);
-      const ids = Array.from({ length: count }, (_, i) => BigInt(i));
+      const start = Math.max(0, count - ADMIN_MAX_SCAN_MATCHES);
+      const ids = Array.from({ length: count - start }, (_, i) => BigInt(start + i));
       const pending: string[] = [];
       const completed: string[] = [];
       const chunkSize = 25;
@@ -517,6 +566,10 @@ export default function AdminDisputesPage() {
     setAdminMessageError(null);
     if (!matchKey) {
       setAdminMessageError("Load a disputed match first.");
+      return;
+    }
+    if (!isContractAdmin) {
+      setAdminMessageError("Connect escrow admin wallet to send admin messages.");
       return;
     }
     if (!isDisputedMatch) {
@@ -828,22 +881,34 @@ export default function AdminDisputesPage() {
               <div className="grid gap-3 sm:grid-cols-3">
                 <button
                   className="rounded-2xl border border-sky-500/40 bg-sky-500/20 px-4 py-3 text-xs font-bold uppercase tracking-wider text-sky-200"
-                  disabled={!isContractAdmin || !creator}
-                  onClick={() => creator && resolveMatch(creator, false)}
+                  disabled={!isContractAdmin || !creator || isResolving}
+                  onClick={() =>
+                    creator &&
+                    requestResolveAction(creator, false, `Release payout to creator (${displayNameForWallet(creator)})`)
+                  }
                 >
                   Release to Creator
                 </button>
                 <button
                   className="rounded-2xl border border-sky-500/40 bg-sky-500/20 px-4 py-3 text-xs font-bold uppercase tracking-wider text-sky-200"
-                  disabled={!isContractAdmin || !opponent}
-                  onClick={() => opponent && resolveMatch(opponent, false)}
+                  disabled={!isContractAdmin || !opponent || isResolving}
+                  onClick={() =>
+                    opponent &&
+                    requestResolveAction(opponent, false, `Release payout to opponent (${displayNameForWallet(opponent)})`)
+                  }
                 >
                   Release to Opponent
                 </button>
                 <button
                   className="rounded-2xl border border-red-500/30 bg-slate-700/20 px-4 py-3 text-xs font-bold uppercase tracking-wider text-red-300"
-                  disabled={!isContractAdmin}
-                  onClick={() => resolveMatch("0x0000000000000000000000000000000000000000", true)}
+                  disabled={!isContractAdmin || isResolving}
+                  onClick={() =>
+                    requestResolveAction(
+                      "0x0000000000000000000000000000000000000000",
+                      true,
+                      "Refund both creator and opponent",
+                    )
+                  }
                 >
                   Refund Both
                 </button>
@@ -860,6 +925,11 @@ export default function AdminDisputesPage() {
           {data && canResolveInAdmin && !isContractAdmin && (
             <div className="mt-2 text-xs text-amber-300">
               Resolve actions are disabled until the escrow contract admin wallet is connected.
+            </div>
+          )}
+          {isResolving && (
+            <div className="mt-2 rounded-xl border border-sky-500/25 bg-sky-500/10 px-3 py-2 text-xs text-sky-100">
+              Admin resolution transaction in progress. Wait for wallet/network confirmation.
             </div>
           )}
 
@@ -882,7 +952,7 @@ export default function AdminDisputesPage() {
                   type="button"
                   className="rounded-2xl border border-sky-500/40 bg-sky-500/25 px-4 py-3 text-xs font-bold uppercase tracking-wider text-sky-100 disabled:opacity-30"
                   onClick={() => void sendAdminMessage()}
-                  disabled={!isDisputedMatch}
+                  disabled={!isDisputedMatch || !isContractAdmin || isResolving}
                 >
                   Send Message
                 </button>
@@ -894,7 +964,7 @@ export default function AdminDisputesPage() {
                       "Admin notice: both players should upload evidence screenshots within the dispute timeframe.",
                     )
                   }
-                  disabled={!isDisputedMatch}
+                  disabled={!isDisputedMatch || !isContractAdmin || isResolving}
                 >
                   Send Evidence Reminder
                 </button>
@@ -1102,7 +1172,7 @@ export default function AdminDisputesPage() {
                           type="button"
                           className="rounded-xl border border-sky-500/40 bg-sky-500/20 px-4 py-2 text-xs font-bold uppercase tracking-wider text-sky-100 disabled:opacity-30"
                           onClick={() => void sendAdminMessage()}
-                          disabled={!isDisputedMatch}
+                          disabled={!isDisputedMatch || !isContractAdmin || isResolving}
                         >
                           Send Message
                         </button>
@@ -1114,7 +1184,7 @@ export default function AdminDisputesPage() {
                               "Admin notice: both players should upload evidence screenshots within 10 minutes. If one side fails to upload within 30 minutes, priority resolution goes to the side with evidence.",
                             )
                           }
-                          disabled={!isDisputedMatch}
+                          disabled={!isDisputedMatch || !isContractAdmin || isResolving}
                         >
                           Send Evidence Reminder
                         </button>
@@ -1169,22 +1239,34 @@ export default function AdminDisputesPage() {
                       <div className="mt-3 grid gap-2 sm:grid-cols-3">
                         <button
                           className="rounded-xl border border-sky-500/40 bg-sky-500/20 px-4 py-2 text-xs font-bold uppercase tracking-wider text-sky-200 disabled:opacity-30"
-                          disabled={!isContractAdmin || !creator}
-                          onClick={() => creator && resolveMatch(creator, false)}
+                          disabled={!isContractAdmin || !creator || isResolving}
+                          onClick={() =>
+                            creator &&
+                            requestResolveAction(creator, false, `Release payout to creator (${displayNameForWallet(creator)})`)
+                          }
                         >
                           Creator
                         </button>
                         <button
                           className="rounded-xl border border-sky-500/40 bg-sky-500/20 px-4 py-2 text-xs font-bold uppercase tracking-wider text-sky-200 disabled:opacity-30"
-                          disabled={!isContractAdmin || !opponent}
-                          onClick={() => opponent && resolveMatch(opponent, false)}
+                          disabled={!isContractAdmin || !opponent || isResolving}
+                          onClick={() =>
+                            opponent &&
+                            requestResolveAction(opponent, false, `Release payout to opponent (${displayNameForWallet(opponent)})`)
+                          }
                         >
                           Opponent
                         </button>
                         <button
                           className="rounded-xl border border-red-500/30 bg-slate-700/20 px-4 py-2 text-xs font-bold uppercase tracking-wider text-red-300 disabled:opacity-30"
-                          disabled={!isContractAdmin}
-                          onClick={() => resolveMatch("0x0000000000000000000000000000000000000000", true)}
+                          disabled={!isContractAdmin || isResolving}
+                          onClick={() =>
+                            requestResolveAction(
+                              "0x0000000000000000000000000000000000000000",
+                              true,
+                              "Refund both creator and opponent",
+                            )
+                          }
                         >
                           Refund
                         </button>
@@ -1193,14 +1275,62 @@ export default function AdminDisputesPage() {
                         <button
                           type="button"
                           className="mt-3 w-full rounded-xl border border-emerald-500/40 bg-emerald-500/20 px-4 py-2 text-xs font-bold uppercase tracking-wider text-emerald-100 disabled:opacity-30"
-                          disabled={!isContractAdmin}
-                          onClick={() => resolveMatch(policyWinnerAddress, false)}
+                          disabled={!isContractAdmin || isResolving}
+                          onClick={() =>
+                            requestResolveAction(
+                              policyWinnerAddress,
+                              false,
+                              `Apply 30m policy winner (${displayNameForWallet(policyWinnerAddress)})`,
+                            )
+                          }
                         >
                           Apply 30m Policy Winner
                         </button>
                       )}
                     </div>
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {resolveIntent && (
+            <div
+              className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 px-4"
+              onClick={() => {
+                if (isResolving) return;
+                setResolveIntent(null);
+              }}
+            >
+              <div
+                className="w-full max-w-lg rounded-3xl border border-red-500/25 bg-slate-900/95 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="text-[11px] uppercase tracking-[0.35em] text-red-300/80">Confirm Admin Resolve</div>
+                <h3 className="mt-2 text-2xl font-semibold text-white">Finalize This Match?</h3>
+                <p className="mt-3 text-sm text-gray-300">
+                  Action: <span className="text-sky-200">{resolveIntent.label}</span>
+                </p>
+                <p className="mt-2 text-xs text-amber-200/90">
+                  This sends an irreversible on-chain admin resolution transaction.
+                </p>
+                <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs font-bold uppercase tracking-wider text-white hover:bg-white/10 disabled:opacity-30"
+                    onClick={() => setResolveIntent(null)}
+                    disabled={isResolving}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-2xl border border-red-500/40 bg-red-500/20 px-4 py-3 text-xs font-bold uppercase tracking-wider text-red-100 hover:bg-red-500/30 disabled:opacity-30"
+                    onClick={() => void resolveMatch(resolveIntent.winner, resolveIntent.refundBoth)}
+                    disabled={isResolving}
+                  >
+                    {isResolving ? "Resolving..." : "Confirm Resolve"}
+                  </button>
                 </div>
               </div>
             </div>

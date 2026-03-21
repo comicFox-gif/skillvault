@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getReputationSnapshot, saveReputationSnapshot } from "@/lib/server/disputeStore";
+import { checkRateLimit } from "@/lib/server/rateLimit";
 
 export const runtime = "nodejs";
 
@@ -44,6 +45,19 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const limit = checkRateLimit({
+      request,
+      key: "reputation:post",
+      max: 60,
+      windowMs: 60_000,
+    });
+    if (!limit.ok) {
+      return NextResponse.json(
+        { error: `Too many reputation updates. Retry in ${limit.retryAfterSec}s.` },
+        { status: 429, headers: { "Retry-After": String(limit.retryAfterSec) } },
+      );
+    }
+
     const payload = (await request.json()) as {
       chainId?: number;
       byWallet?: Record<

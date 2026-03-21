@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { addMessage, ensureAutoMessage, listMessages } from "@/lib/server/disputeStore";
 import { type DisputeMessageItem, type DisputeStarterRole } from "@/lib/disputeMessages";
+import { checkRateLimit } from "@/lib/server/rateLimit";
 
 export const runtime = "nodejs";
 
@@ -37,6 +38,18 @@ export async function POST(request: Request, context: ParamsContext) {
   try {
     const matchId = await getMatchId(context);
     if (!matchId) return NextResponse.json({ error: "Invalid match id" }, { status: 400 });
+    const limit = checkRateLimit({
+      request,
+      key: `disputes:messages:${matchId}:post`,
+      max: 12,
+      windowMs: 60_000,
+    });
+    if (!limit.ok) {
+      return NextResponse.json(
+        { error: `Too many message requests. Retry in ${limit.retryAfterSec}s.` },
+        { status: 429, headers: { "Retry-After": String(limit.retryAfterSec) } },
+      );
+    }
 
     const payload = (await request.json()) as Omit<
       DisputeMessageItem,

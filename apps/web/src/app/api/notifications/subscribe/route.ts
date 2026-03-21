@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { upsertPushSubscription } from "@/lib/server/notificationStore";
+import { checkRateLimit } from "@/lib/server/rateLimit";
 
 export const runtime = "nodejs";
 
@@ -13,6 +14,19 @@ function getErrorMessage(error: unknown, fallback: string) {
 
 export async function POST(request: Request) {
   try {
+    const limit = checkRateLimit({
+      request,
+      key: "notifications:subscribe:post",
+      max: 20,
+      windowMs: 60_000,
+    });
+    if (!limit.ok) {
+      return NextResponse.json(
+        { error: `Too many subscribe requests. Retry in ${limit.retryAfterSec}s.` },
+        { status: 429, headers: { "Retry-After": String(limit.retryAfterSec) } },
+      );
+    }
+
     const payload = (await request.json().catch(() => ({}))) as {
       wallet?: string;
       subscription?: {

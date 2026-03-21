@@ -5,6 +5,7 @@ import {
   updateRematchIntentStatus,
   type RematchIntent,
 } from "@/lib/server/rematchStore";
+import { checkRateLimit } from "@/lib/server/rateLimit";
 
 export const runtime = "nodejs";
 
@@ -32,6 +33,18 @@ export async function POST(request: Request, context: ParamsContext) {
   try {
     const matchId = await getMatchId(context);
     if (!matchId) return NextResponse.json({ error: "Invalid match id" }, { status: 400 });
+    const limit = checkRateLimit({
+      request,
+      key: `rematch:${matchId}:post`,
+      max: 12,
+      windowMs: 60_000,
+    });
+    if (!limit.ok) {
+      return NextResponse.json(
+        { error: `Too many rematch actions. Retry in ${limit.retryAfterSec}s.` },
+        { status: 429, headers: { "Retry-After": String(limit.retryAfterSec) } },
+      );
+    }
 
     const body = (await request.json()) as {
       action?: "create" | "join" | "cancel";

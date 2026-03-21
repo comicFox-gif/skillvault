@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getWalletProfile, setWalletProfile } from "@/lib/server/profileStore";
+import { checkRateLimit } from "@/lib/server/rateLimit";
 
 export const runtime = "nodejs";
 
@@ -35,6 +36,18 @@ export async function POST(request: Request, context: ParamsContext) {
   try {
     const wallet = await getWalletParam(context);
     if (!wallet) return NextResponse.json({ error: "Invalid wallet" }, { status: 400 });
+    const limit = checkRateLimit({
+      request,
+      key: `users:${wallet}:profile:update`,
+      max: 10,
+      windowMs: 60_000,
+    });
+    if (!limit.ok) {
+      return NextResponse.json(
+        { error: `Too many profile updates. Retry in ${limit.retryAfterSec}s.` },
+        { status: 429, headers: { "Retry-After": String(limit.retryAfterSec) } },
+      );
+    }
     const body = (await request.json().catch(() => ({}))) as { username?: string; avatarDataUrl?: string };
     const profile = await setWalletProfile(wallet, {
       username: typeof body.username === "string" ? body.username : undefined,

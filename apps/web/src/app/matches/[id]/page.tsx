@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, use, type ChangeEvent } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { useAccount, useBalance, useChainId, usePublicClient, useReadContract, useWriteContract } from "wagmi";
+import { useAccount, useBalance, useChainId, usePublicClient, useReadContract, useSwitchChain, useWriteContract } from "wagmi";
 import { decodeEventLog, formatEther, zeroAddress, type Address } from "viem";
 import { decodeMatchCode, encodeMatchCode } from "@/lib/matchCode";
 import { appendDisputeEvidence, loadDisputeEvidence, type DisputeEvidenceItem } from "@/lib/disputeEvidence";
@@ -16,6 +16,7 @@ import {
 } from "@/lib/disputeMessages";
 import { loadWalletProfiles } from "@/lib/profile";
 import {
+  getChainConfig,
   getEscrowAddressForChain,
   getNativeSymbolForChain,
   getSupportedChainNames,
@@ -345,8 +346,16 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const searchParams = useSearchParams();
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
+  const { switchChainAsync, isPending: switchingChain } = useSwitchChain();
+  const requestedChainParam = searchParams.get("c");
+  const requestedChainId =
+    requestedChainParam && /^\d+$/.test(requestedChainParam)
+      ? Number(requestedChainParam)
+      : null;
+  const requiredChainId = requestedChainId && isSupportedChainId(requestedChainId) ? requestedChainId : chainId;
   const walletBalanceQuery = useBalance({
     address,
+    chainId: requiredChainId,
     query: { enabled: Boolean(isConnected && address) },
   });
   const publicClient = usePublicClient();
@@ -356,9 +365,11 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     value?: bigint;
     nonce?: number;
   };
-  const escrowAddress = getEscrowAddressForChain(chainId);
-  const nativeSymbol = getNativeSymbolForChain(chainId);
-  const chainSupported = isSupportedChainId(chainId);
+  const escrowAddress = getEscrowAddressForChain(requiredChainId);
+  const nativeSymbol = getNativeSymbolForChain(requiredChainId);
+  const chainSupported = isSupportedChainId(requiredChainId);
+  const requiredChainName = getChainConfig(requiredChainId)?.name ?? `Chain ${requiredChainId}`;
+  const onRequiredChain = chainId === requiredChainId;
 
   const decodedMatchId = useMemo(() => decodeMatchCode(id), [id]);
   const hasValidRoomCode = decodedMatchId !== null;
@@ -370,35 +381,35 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     abi: escrowAbi,
     functionName: "getMatch",
     args: [matchId] as const,
-    query: { enabled: Boolean(escrowAddress && hasValidRoomCode), refetchInterval: 2000 },
+    query: { enabled: Boolean(escrowAddress && hasValidRoomCode && chainSupported && onRequiredChain), refetchInterval: 2000 },
   });
   const matchStorageQuery = useReadContract({
     address: escrowAddress,
     abi: escrowAbi,
     functionName: "matches",
     args: [matchId] as const,
-    query: { enabled: Boolean(escrowAddress && hasValidRoomCode), refetchInterval: 2000 },
+    query: { enabled: Boolean(escrowAddress && hasValidRoomCode && chainSupported && onRequiredChain), refetchInterval: 2000 },
   });
   const creatorVoteQuery = useReadContract({
     address: escrowAddress,
     abi: escrowAbi,
     functionName: "creatorReportedWinner",
     args: [matchId] as const,
-    query: { enabled: Boolean(escrowAddress && hasValidRoomCode), refetchInterval: 2000 },
+    query: { enabled: Boolean(escrowAddress && hasValidRoomCode && chainSupported && onRequiredChain), refetchInterval: 2000 },
   });
   const opponentVoteQuery = useReadContract({
     address: escrowAddress,
     abi: escrowAbi,
     functionName: "opponentReportedWinner",
     args: [matchId] as const,
-    query: { enabled: Boolean(escrowAddress && hasValidRoomCode), refetchInterval: 2000 },
+    query: { enabled: Boolean(escrowAddress && hasValidRoomCode && chainSupported && onRequiredChain), refetchInterval: 2000 },
   });
   const resolvedWinnerQuery = useReadContract({
     address: escrowAddress,
     abi: escrowAbi,
     functionName: "resolvedWinner",
     args: [matchId] as const,
-    query: { enabled: Boolean(escrowAddress && hasValidRoomCode), refetchInterval: 4000 },
+    query: { enabled: Boolean(escrowAddress && hasValidRoomCode && chainSupported && onRequiredChain), refetchInterval: 4000 },
   });
 
   const [txHash, setTxHash] = useState<string | null>(null);
@@ -425,7 +436,9 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const [showDisputePanel, setShowDisputePanel] = useState(false);
   const [rematchIntent, setRematchIntent] = useState<RematchIntent | null>(null);
   const [isRematching, setIsRematching] = useState(false);
+  const [isRematchDecisionPending, setIsRematchDecisionPending] = useState(false);
   const [rematchStatusText, setRematchStatusText] = useState("");
+  const [txActionStatusText, setTxActionStatusText] = useState<string | null>(null);
   const [disputeEvidence, setDisputeEvidence] = useState<DisputeEvidenceItem[]>([]);
   const [disputeMessages, setDisputeMessages] = useState<DisputeMessageItem[]>([]);
   const [disputeMessageDraft, setDisputeMessageDraft] = useState("");
@@ -483,6 +496,8 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const canJoin = Boolean(
     canJoinMatchState &&
       isConnected &&
+      chainSupported &&
+      onRequiredChain &&
       !isCreator &&
       (opponentIsOpen || isOpponent),
   );
@@ -530,6 +545,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const gameParam = searchParams.get("g");
   const platformParam = searchParams.get("p");
   const joinParam = searchParams.get("j");
+  const pendingCreate = searchParams.get("pending") === "1";
   const rematchTimeframe = timeframeParam && /^\d+$/.test(timeframeParam) ? timeframeParam : "10";
   const rematchGame =
     gameParam === "eFootball" || gameParam === "FC26" || gameParam === "FC25" || gameParam === "Mortal Kombat"
@@ -556,10 +572,11 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     if (joinParam && /^\d+$/.test(joinParam)) {
       params.set("j", joinParam);
     }
+    params.set("c", String(requiredChainId));
     params.set("auto", "1");
     const query = params.toString();
     return `/matches/${encodeURIComponent(roomCode)}${query ? `?${query}` : ""}`;
-  }, [hasValidRoomCode, roomCode, searchParams]);
+  }, [hasValidRoomCode, roomCode, searchParams, requiredChainId]);
   const inviteLinkPreview = useMemo(() => {
     if (!invitePath) return "-";
     return `invite://${makeAlphabetMask(invitePath, 14)}`;
@@ -593,6 +610,18 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   function avatarForWallet(value?: string) {
     if (!value) return "";
     return walletAvatars[value.toLowerCase()] ?? "";
+  }
+
+  async function handleSwitchRequiredChain() {
+    try {
+      await switchChainAsync({ chainId: requiredChainId });
+    } catch (switchError: any) {
+      setErr(
+        switchError?.shortMessage ||
+          switchError?.message ||
+          `Failed to switch network. Please switch to ${requiredChainName} in wallet.`,
+      );
+    }
   }
 
   const resolvedWinnerLabel = useMemo(() => {
@@ -791,17 +820,20 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const showPostMatchActions = Boolean(statusNum === 5 && isPlayer);
 
   async function runTx(
+    actionLabel: string,
     fn: () => Promise<`0x${string}`>,
     onSuccess?: (hash: `0x${string}`) => void,
   ) {
     if (txActionLockRef.current) return;
     txActionLockRef.current = true;
     setIsTxActionPending(true);
+    setTxActionStatusText(`${actionLabel}: confirm in wallet...`);
     setErr(null);
     setTxHash(null);
     try {
       const hash = await fn();
       setTxHash(hash);
+      setTxActionStatusText(`${actionLabel}: transaction submitted. Waiting for confirmation...`);
       onSuccess?.(hash);
       window.setTimeout(() => {
         matchQuery.refetch();
@@ -815,15 +847,18 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
             timeout: TX_ACTION_RECEIPT_WAIT_TIMEOUT_MS,
             pollingInterval: TX_ACTION_RECEIPT_POLL_INTERVAL_MS,
           });
+          setTxActionStatusText(`${actionLabel}: confirmed on-chain. Syncing state...`);
         } catch {
-          // Continue even if receipt waiting times out on slow RPCs.
+          setTxActionStatusText(`${actionLabel}: still pending on chain. Syncing latest state...`);
         }
       }
       matchQuery.refetch();
       matchStorageQuery.refetch();
       loadWalletHistories();
+      window.setTimeout(() => setTxActionStatusText(null), 4500);
     } catch (e: any) {
       setErr(e?.shortMessage || e?.message || String(e));
+      setTxActionStatusText(null);
     } finally {
       txActionLockRef.current = false;
       setIsTxActionPending(false);
@@ -1111,6 +1146,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
       nextParams.set("g", rematchGame);
       nextParams.set("p", rematchPlatform);
       nextParams.set("j", rematchJoinMins);
+      nextParams.set("c", String(requiredChainId));
       nextParams.set("rematchOf", oldMatchId);
       nextParams.set("rematchBy", requestedByRole);
       router.push(`/matches/${encodeURIComponent(newRoomCode)}?${nextParams.toString()}`);
@@ -1124,45 +1160,58 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
 
   async function joinRequestedRematch() {
     if (!rematchIntent) return;
-    if (isConnected && address) {
-      await fetch(`/api/rematch/${encodeURIComponent(matchId.toString())}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "join", actor: address.toLowerCase() }),
-      }).catch(() => undefined);
-      void dispatchMatchPushNotification({
-        wallets: [rematchIntent.requestedBy],
-        title: "Rematch accepted",
-        body: `Room #${roomCode}: opponent accepted your rematch.`,
-        tag: `rematch-accepted-${rematchIntent.oldMatchId}`,
-        data: { type: "rematch_accepted", newRoomCode: rematchIntent.newRoomCode },
-      });
+    if (isRematchDecisionPending) return;
+    setIsRematchDecisionPending(true);
+    try {
+      if (isConnected && address) {
+        await fetch(`/api/rematch/${encodeURIComponent(matchId.toString())}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "join", actor: address.toLowerCase() }),
+        }).catch(() => undefined);
+        void dispatchMatchPushNotification({
+          wallets: [rematchIntent.requestedBy],
+          title: "Rematch accepted",
+          body: `Room #${roomCode}: opponent accepted your rematch.`,
+          tag: `rematch-accepted-${rematchIntent.oldMatchId}`,
+          data: { type: "rematch_accepted", newRoomCode: rematchIntent.newRoomCode },
+        });
+      }
+      const params = new URLSearchParams();
+      params.set("auto", "1");
+      params.set("t", rematchIntent.timeframe);
+      params.set("g", rematchIntent.game);
+      params.set("p", rematchIntent.platform);
+      params.set("j", rematchIntent.joinMins);
+      params.set("c", String(requiredChainId));
+      params.set("rematchOf", rematchIntent.oldMatchId);
+      router.push(`/matches/${encodeURIComponent(rematchIntent.newRoomCode)}?${params.toString()}`);
+    } finally {
+      setIsRematchDecisionPending(false);
     }
-    const params = new URLSearchParams();
-    params.set("auto", "1");
-    params.set("t", rematchIntent.timeframe);
-    params.set("g", rematchIntent.game);
-    params.set("p", rematchIntent.platform);
-    params.set("j", rematchIntent.joinMins);
-    params.set("rematchOf", rematchIntent.oldMatchId);
-    router.push(`/matches/${encodeURIComponent(rematchIntent.newRoomCode)}?${params.toString()}`);
   }
 
   async function cancelRequestedRematch() {
     if (!rematchIntent) return;
-    await fetch(`/api/rematch/${encodeURIComponent(matchId.toString())}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "cancel", actor: address?.toLowerCase() ?? "" }),
-    }).catch(() => undefined);
-    void dispatchMatchPushNotification({
-      wallets: [rematchIntent.requestedBy],
-      title: "Rematch cancelled",
-      body: `Room #${roomCode}: rematch request was cancelled.`,
-      tag: `rematch-cancelled-${rematchIntent.oldMatchId}`,
-      data: { type: "rematch_cancelled" },
-    });
-    await refreshRematchIntent();
+    if (isRematchDecisionPending) return;
+    setIsRematchDecisionPending(true);
+    try {
+      await fetch(`/api/rematch/${encodeURIComponent(matchId.toString())}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "cancel", actor: address?.toLowerCase() ?? "" }),
+      }).catch(() => undefined);
+      void dispatchMatchPushNotification({
+        wallets: [rematchIntent.requestedBy],
+        title: "Rematch cancelled",
+        body: `Room #${roomCode}: rematch request was cancelled.`,
+        tag: `rematch-cancelled-${rematchIntent.oldMatchId}`,
+        data: { type: "rematch_cancelled" },
+      });
+      await refreshRematchIntent();
+    } finally {
+      setIsRematchDecisionPending(false);
+    }
   }
 
   async function writeWithNonce(config: WriteConfig) {
@@ -1364,7 +1413,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   function submitWinClaim() {
     if (!canAct || !address || !canDeclare || isOutcomeSubmitting) return;
     setIsOutcomeSubmitting(true);
-    runTx(() =>
+    runTx("Submit win claim", () =>
       writeWithNonce({
         address: escrowAddress!,
         abi: escrowAbi,
@@ -1387,7 +1436,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   function submitLossClaim() {
     if (!canAct || !opponentAddressForLoss || !canDeclare || isOutcomeSubmitting) return;
     setIsOutcomeSubmitting(true);
-    runTx(() =>
+    runTx("Submit loss claim", () =>
       writeWithNonce({
         address: escrowAddress!,
         abi: escrowAbi,
@@ -1415,6 +1464,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     setDisputeCooldownUntilMs(until);
     setDisputeCooldownNowMs(now);
     runTx(
+      "Open dispute",
       () =>
         writeWithNonce({
           address: escrowAddress!,
@@ -1447,6 +1497,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   function submitConcedeDispute() {
     if (!canAct || !isPlayer || statusNum !== 4) return;
     runTx(
+      "Concede dispute",
       () =>
         writeWithNonce({
           address: escrowAddress!,
@@ -1468,7 +1519,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     );
   }
 
-  const canAct = Boolean(isConnected && escrowAddress);
+  const canAct = Boolean(isConnected && escrowAddress && chainSupported && onRequiredChain);
   const txActionBusy = Boolean(isTxActionPending || isOutcomeSubmitting);
   const matchStarted = Boolean(
     (statusNum === 2 || statusNum === 3 || statusNum === 4) && cancelCountdown === 0,
@@ -1861,11 +1912,30 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
     if (opponentEvidenceCount > 0 && creatorEvidenceCount === 0) return "Opponent";
     return null;
   }, [policyWindowRemainingSec, creatorEvidenceCount, opponentEvidenceCount]);
+  const creatorVoted = Boolean(creatorVote && creatorVote.toLowerCase() !== zeroAddress);
+  const opponentVoted = Boolean(opponentVote && opponentVote.toLowerCase() !== zeroAddress);
+  const timeoutVoteMode = Boolean((creatorVoted && !opponentVoted) || (!creatorVoted && opponentVoted));
+  const confirmDeadlineMs =
+    typeof confirmByRaw === "bigint" ? Number(confirmByRaw) * 1000 : null;
+  const timeoutReached = Boolean(confirmDeadlineMs !== null && nowMs >= confirmDeadlineMs);
+  const keeperResolvedByTimeout = Boolean(
+    statusNum === 5 &&
+      timeoutVoteMode &&
+      timeoutReached &&
+      !adminResolutionMessage,
+  );
+  const timeoutNoResponseLabel = useMemo(() => {
+    if (!timeoutVoteMode) return null;
+    if (creatorVoted && !opponentVoted) return opponent ? displayNameForWallet(opponent) : "opponent";
+    if (opponentVoted && !creatorVoted) return creator ? displayNameForWallet(creator) : "opponent";
+    return null;
+  }, [timeoutVoteMode, creatorVoted, opponentVoted, creator, opponent, walletUsernames]);
 
   async function joinAndLockStake() {
     if (!stakeValue || !escrowAddress || isJoinActionPending) return;
     setIsJoinActionPending(true);
     await runTx(
+      "Join and lock stake",
       () =>
         writeWithNonce({
           address: escrowAddress!,
@@ -2037,12 +2107,28 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
 
         {!escrowAddress && (
           <div className="mb-6 border border-red-500/20 bg-red-500/10 p-4 text-red-400 font-mono text-sm">
-            Escrow address not configured for this chain.
+            Escrow address not configured for required chain.
           </div>
         )}
         {!chainSupported && (
           <div className="mb-6 border border-red-500/20 bg-red-500/10 p-4 text-red-400 font-mono text-sm">
-            Unsupported network. Switch wallet to one of: {getSupportedChainNames()}.
+            Unsupported required chain. Switch wallet to one of: {getSupportedChainNames()}.
+          </div>
+        )}
+        {chainSupported && !onRequiredChain && (
+          <div className="mb-6 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-100">
+            <div className="font-bold uppercase tracking-wider">Wrong network for this room.</div>
+            <div className="mt-1">
+              This match was created on <span className="font-semibold">{requiredChainName}</span>. Switch network to continue.
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleSwitchRequiredChain()}
+              disabled={switchingChain}
+              className="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/20 px-4 py-2 text-xs font-bold uppercase tracking-wider text-amber-100 disabled:opacity-60"
+            >
+              {switchingChain ? "Switching..." : `Switch To ${requiredChainName}`}
+            </button>
           </div>
         )}
 
@@ -2074,18 +2160,30 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                   </div>
                 )}
                 {statusNum === 3 && timeoutSecondsLeft !== null && timeoutSecondsLeft > 0 && (
-                  <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs uppercase tracking-widest text-amber-200">
-                    Keeper timeout in {timeoutSecondsLeft}s
+                  <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                    <div className="uppercase tracking-widest">Keeper timeout in {timeoutSecondsLeft}s</div>
+                    <div className="mt-1 text-[11px] text-amber-100/90">
+                      If one player selected outcome and the opponent refuses to respond, keeper bot will release funds
+                      to the selected winner at timeout.
+                    </div>
                   </div>
                 )}
                 {statusNum === 3 && timeoutSecondsLeft === 0 && (
-                  <div className="mt-3 rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs uppercase tracking-widest text-sky-200">
-                    Timeout reached. Keeper will auto-finalize shortly.
+                  <div className="mt-3 rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-200">
+                    <div className="uppercase tracking-widest">Timeout reached. Keeper bot is finalizing now.</div>
+                    <div className="mt-1 text-[11px] text-sky-100/90">
+                      Funds will be released against the opponent that refused to select outcome.
+                    </div>
                   </div>
                 )}
                 {statusNum === 5 && (
                   <div className="mt-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
                     <div className="uppercase tracking-widest">Match resolved on-chain. Winner: {resolvedWinnerLabel}</div>
+                    {keeperResolvedByTimeout && (
+                      <div className="mt-1 text-[11px] text-emerald-100/90">
+                        Game concluded by keeper bot after timeout. No-response player: {timeoutNoResponseLabel ?? "opponent"}.
+                      </div>
+                    )}
                     {adminResolutionMessage && (
                       <div className="mt-1 text-[11px] text-emerald-100/90">
                         Match has been resolved by admin. Funds were released to {adminResolvedTargetLabel}.
@@ -2138,7 +2236,9 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                   )}
                   {matchLoaded && !matchExists && (
                     <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-xs text-red-300">
-                      Match not found. Confirm you are on the same network and using a valid room code.
+                      {pendingCreate
+                        ? "Finalizing match creation on-chain... this can take a few seconds. Keep this page open."
+                        : "Match not found. Confirm you are on the same network and using a valid room code."}
                     </div>
                   )}
                   {roomFull && (
@@ -2178,7 +2278,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                           className="rounded-2xl border border-emerald-500/40 bg-emerald-500/20 p-3 text-xs font-bold uppercase tracking-wider text-emerald-100 transition-all hover:bg-emerald-500/30 disabled:opacity-20"
                           disabled={!canAct || txActionBusy}
                           onClick={() =>
-                            runTx(() =>
+                            runTx("Accept opponent result", () =>
                               writeWithNonce({
                                 address: escrowAddress!,
                                 abi: escrowAbi,
@@ -2215,10 +2315,19 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                         : "Dispute"}
                     </button>
                   )}
-                  <button
-                    className="rounded-2xl border border-red-500/30 bg-slate-700/20 p-3 font-bold uppercase tracking-wider text-red-500 transition-all hover:bg-red-900/20 disabled:opacity-20"
+                    <button
+                      className="rounded-2xl border border-red-500/30 bg-slate-700/20 p-3 font-bold uppercase tracking-wider text-red-500 transition-all hover:bg-red-900/20 disabled:opacity-20"
                       disabled={!canCancel || isTxActionPending || isJoinActionPending}
-                      onClick={() => runTx(() => writeWithNonce({ address: escrowAddress!, abi: escrowAbi, functionName: "cancel", args: [matchId] }))}
+                      onClick={() =>
+                        runTx("Cancel match", () =>
+                          writeWithNonce({
+                            address: escrowAddress!,
+                            abi: escrowAbi,
+                            functionName: "cancel",
+                            args: [matchId],
+                          }),
+                        )
+                      }
                     >
                       {statusNum === 0 && isCreator
                         ? `Cancel + Refund ${nativeSymbol}`
@@ -2295,12 +2404,14 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                     </p>
                     {statusNum === 3 && proposedWinner && address && proposedWinner.toLowerCase() === address.toLowerCase() && (
                       <div className="mt-2 text-xs text-gray-400">
-                        Waiting for opponent declaration. If they do nothing until timeout, keeper will auto-finalize this result.
+                        Waiting for opponent declaration. If they do nothing until timeout, keeper bot will auto-finalize and release your payout.
                       </div>
                     )}
                     {statusNum === 3 && timeoutSecondsLeft !== null && (
                       <div className="mt-2 text-xs text-gray-400">
-                        Keeper auto-finalization window: {timeoutSecondsLeft > 0 ? `${timeoutSecondsLeft}s left` : "ready now"}.
+                        Keeper timeout window: {timeoutSecondsLeft > 0 ? `${timeoutSecondsLeft}s left` : "ready now"}.
+                        {" "}
+                        After timeout, funds are released against opponent no-response.
                       </div>
                     )}
                     {statusNum === 3 && !proposedWinner && (
@@ -2313,7 +2424,8 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
 
                 {canSelectOutcome && hasSubmittedOutcome && statusNum === 3 && (
                   <div className="mt-6 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-100">
-                    Outcome already submitted. Waiting for opponent response or keeper timeout. You can still open dispute.
+                    Outcome already submitted. Waiting for opponent response or keeper timeout. If opponent refuses,
+                    keeper bot will finalize and release funds automatically. You can still open dispute.
                   </div>
                 )}
 
@@ -2327,17 +2439,19 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                         <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
                           <button
                             type="button"
-                            className="rounded-xl border border-sky-500/40 bg-sky-500/25 px-3 py-2 font-bold uppercase tracking-wider text-sky-50"
+                            className="rounded-xl border border-sky-500/40 bg-sky-500/25 px-3 py-2 font-bold uppercase tracking-wider text-sky-50 disabled:opacity-30"
                             onClick={() => void joinRequestedRematch()}
+                            disabled={isRematchDecisionPending}
                           >
-                            Join Rematch
+                            {isRematchDecisionPending ? "Processing..." : "Join Rematch"}
                           </button>
                           <button
                             type="button"
-                            className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 font-bold uppercase tracking-wider text-white"
+                            className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 font-bold uppercase tracking-wider text-white disabled:opacity-30"
                             onClick={() => void cancelRequestedRematch()}
+                            disabled={isRematchDecisionPending}
                           >
-                            Cancel
+                            {isRematchDecisionPending ? "Processing..." : "Cancel"}
                           </button>
                         </div>
                       </div>
@@ -2356,7 +2470,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                       <button
                         type="button"
                         onClick={() => void startRematchSameStake()}
-                        disabled={isRematching || !isPlayer || !stakeValue || !rematchOpponent}
+                        disabled={isRematching || isRematchDecisionPending || !isPlayer || !stakeValue || !rematchOpponent}
                         className="rounded-2xl border border-emerald-500/40 bg-emerald-500/20 p-3 text-center text-xs font-bold uppercase tracking-wider text-emerald-100 transition hover:bg-emerald-500/30 disabled:opacity-40"
                       >
                         Rematch Same Stake
@@ -2378,6 +2492,11 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                   <div className="mt-4 border-t border-white/5 pt-4">
                     <p className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">Transaction Hash</p>
                     <p className="truncate text-xs font-mono text-sky-500">{txHash}</p>
+                  </div>
+                )}
+                {txActionStatusText && (
+                  <div className="mt-3 rounded-2xl border border-sky-500/25 bg-sky-500/10 p-3 text-xs text-sky-100">
+                    {txActionStatusText}
                   </div>
                 )}
                 {err && <div className="mt-2 text-xs text-red-500 break-all bg-red-900/20 p-2 border border-red-500/20">{err}</div>}
@@ -2990,11 +3109,15 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
             <div className="text-[11px] uppercase tracking-[0.35em] text-sky-300/80">Result Submitted</div>
             <h3 className="mt-2 text-2xl font-semibold text-white sm:text-3xl">Waiting For Opponent</h3>
             <p className="mt-3 text-sm text-gray-300">
-              Your win was submitted on-chain. Opponent can accept now, dispute, or timeout will allow keeper auto-finalization.
+              Your win was submitted on-chain. Opponent can accept now, dispute, or timeout will allow keeper bot
+              to finalize and release payout against no-response.
             </p>
             {timeoutSecondsLeft !== null && (
               <div className="mt-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-                Keeper timeout: {timeoutSecondsLeft > 0 ? `${timeoutSecondsLeft}s remaining` : "ready now"}
+                Keeper timeout: {timeoutSecondsLeft > 0 ? `${timeoutSecondsLeft}s remaining` : "ready now"}.
+                {timeoutSecondsLeft <= 0
+                  ? " Finalization in progress by keeper bot."
+                  : " After timeout, non-responsive opponent loses claim and payout is released."}
               </div>
             )}
             <button

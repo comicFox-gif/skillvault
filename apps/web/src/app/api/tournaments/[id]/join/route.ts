@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { joinTournament } from "@/lib/server/tournamentStore";
+import { checkRateLimit } from "@/lib/server/rateLimit";
 
 export const runtime = "nodejs";
 
@@ -24,6 +25,18 @@ export async function POST(request: Request, context: ParamsContext) {
   try {
     const id = await getId(context);
     if (!id) return NextResponse.json({ error: "Invalid tournament id" }, { status: 400 });
+    const limit = checkRateLimit({
+      request,
+      key: `tournaments:${id}:join`,
+      max: 10,
+      windowMs: 60_000,
+    });
+    if (!limit.ok) {
+      return NextResponse.json(
+        { error: `Too many join attempts. Retry in ${limit.retryAfterSec}s.` },
+        { status: 429, headers: { "Retry-After": String(limit.retryAfterSec) } },
+      );
+    }
     const payload = (await request.json().catch(() => ({}))) as {
       wallet?: string;
       username?: string;
