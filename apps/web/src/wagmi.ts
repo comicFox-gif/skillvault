@@ -1,6 +1,6 @@
 import { getDefaultConfig } from "@rainbow-me/rainbowkit";
 import { createConfig } from "wagmi";
-import { injected, metaMask } from "wagmi/connectors";
+import { coinbaseWallet, injected, metaMask, walletConnect } from "wagmi/connectors";
 import { fallback, http, type Chain } from "viem";
 import { getRpcUrlsForChain, supportedChains } from "@/lib/chains";
 
@@ -30,14 +30,17 @@ export const config = hasWalletConnectId
       appName: "Skill Vault",
       projectId: walletConnectProjectId!,
       chains,
+      transports,
       ssr: true,
     })
   : createConfig({
       chains,
       connectors: [
-        // Prefer explicit MetaMask connector to reduce injected-provider mismatch issues.
         metaMask(),
+        coinbaseWallet({ appName: "Skill Vault" }),
         injected({ shimDisconnect: true }),
+        // WalletConnect needs a projectId — without one, mobile deep-link wallets
+        // won't be available. Get a free ID at https://cloud.walletconnect.com
       ],
       transports,
       ssr: true,

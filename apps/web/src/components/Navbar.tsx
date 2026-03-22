@@ -43,11 +43,9 @@ export default function Navbar() {
   const { activeMatches } = useActiveMatches();
   const [walletMenuOpen, setWalletMenuOpen] = useState(false);
   const [activeMatchPanelOpen, setActiveMatchPanelOpen] = useState(false);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [walletUsername, setWalletUsername] = useState("");
   const walletMenuRef = useRef<HTMLDivElement | null>(null);
   const activeMatchRef = useRef<HTMLDivElement | null>(null);
-  const mobileMenuRef = useRef<HTMLDivElement | null>(null);
   const openConnectRef = useRef<(() => void) | null>(null);
 
   // Filter to only in-progress matches (not resolved/cancelled)
@@ -76,19 +74,12 @@ export default function Navbar() {
     function onDocClick(event: globalThis.MouseEvent) {
       if (walletMenuRef.current?.contains(event.target as Node)) return;
       if (activeMatchRef.current?.contains(event.target as Node)) return;
-      if (mobileMenuRef.current?.contains(event.target as Node)) return;
       setWalletMenuOpen(false);
       setActiveMatchPanelOpen(false);
-      setMobileMenuOpen(false);
     }
-    if (walletMenuOpen || activeMatchPanelOpen || mobileMenuOpen) document.addEventListener("mousedown", onDocClick);
+    if (walletMenuOpen || activeMatchPanelOpen) document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
-  }, [walletMenuOpen, activeMatchPanelOpen, mobileMenuOpen]);
-
-  // Close mobile menu on navigation
-  useEffect(() => {
-    setMobileMenuOpen(false);
-  }, [pathname]);
+  }, [walletMenuOpen, activeMatchPanelOpen]);
 
   async function handleLinkWalletClick(openConnectModal: () => void) {
     try {
@@ -146,22 +137,8 @@ export default function Navbar() {
             })}
           </div>
 
-          {/* Right side: Hamburger + Active Match + Wallet */}
+          {/* Right side: Active Match + Wallet */}
           <div className="flex items-center gap-2">
-            {/* Mobile hamburger */}
-            <button
-              type="button"
-              className="md:hidden flex items-center justify-center rounded-lg border border-white/10 bg-white/5 p-2 text-gray-400 transition hover:text-white hover:bg-white/10"
-              onClick={() => setMobileMenuOpen((o) => !o)}
-              aria-label="Toggle menu"
-            >
-              {mobileMenuOpen ? (
-                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-              ) : (
-                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
-              )}
-            </button>
-
             {/* Active Match Button */}
             {liveMatches.length > 0 && (
               <div className="relative" ref={activeMatchRef}>
@@ -325,63 +302,6 @@ export default function Navbar() {
           </div>
         </div>
       </nav>
-
-      {/* Mobile collapse menu */}
-      {mobileMenuOpen && (
-        <div
-          ref={mobileMenuRef}
-          className="fixed inset-x-0 top-[57px] z-50 border-b border-white/10 bg-[var(--sv-bg)]/95 backdrop-blur-xl md:hidden animate-fade-in-up"
-        >
-          <div className="mx-auto max-w-7xl px-4 py-3 space-y-1">
-            {filteredItems.map((item) => {
-              const Icon = item.icon;
-              const isActive = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={() => setMobileMenuOpen(false)}
-                  className={`flex items-center gap-3 rounded-lg px-4 py-3 text-sm font-bold uppercase tracking-wider transition-colors ${
-                    isActive
-                      ? "text-sky-400 bg-sky-500/10"
-                      : "text-gray-400 hover:text-white hover:bg-white/5"
-                  }`}
-                >
-                  <Icon className="h-5 w-5" />
-                  {item.label}
-                </Link>
-              );
-            })}
-
-            {/* Live matches in mobile menu */}
-            {liveMatches.length > 0 && (
-              <>
-                <div className="mx-4 my-2 border-t border-white/5" />
-                <div className="px-4 py-1 text-[10px] uppercase tracking-[0.3em] text-emerald-400/70">
-                  Live Matches
-                </div>
-                {liveMatches.slice(0, 3).map((match) => (
-                  <Link
-                    key={match.roomCode}
-                    href={`/matches/${match.roomCode}`}
-                    onClick={() => setMobileMenuOpen(false)}
-                    className="flex items-center gap-3 rounded-lg px-4 py-2.5 text-sm transition-colors hover:bg-white/5"
-                  >
-                    <span className="relative flex h-2 w-2 shrink-0">
-                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                      <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-                    </span>
-                    <span className="font-bold text-white">Room #{match.roomCode}</span>
-                    <span className={`ml-auto text-[10px] font-bold uppercase tracking-wider ${STATUS_COLORS[match.status] ?? "text-gray-400"}`}>
-                      {STATUS_LABELS[match.status] ?? "Unknown"}
-                    </span>
-                  </Link>
-                ))}
-              </>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Mobile bottom tab bar - hidden in match rooms to avoid overlap with sticky actions */}
       {!isMatchRoom && (
