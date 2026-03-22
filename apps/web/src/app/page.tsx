@@ -25,19 +25,23 @@ export default function VaultPage() {
     let mounted = true;
     async function fetchStats() {
       try {
-        const res = await fetch("/api/reputation?chainId=420420417&wallets=__stats__");
-        if (!res.ok) throw new Error();
-        // We can derive rough stats from the leaderboards endpoint
-        const lbRes = await fetch("/api/leaderboards?chainId=420420417&page=1&limit=1");
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        const lbRes = await fetch("/api/leaderboards?chainId=420420417&page=1&limit=1", {
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
         if (lbRes.ok) {
           const lbData = await lbRes.json() as { total?: number };
           if (mounted) {
             setPlatformStats({
-              totalMatches: (lbData.total ?? 0) * 3, // rough estimate from player count
+              totalMatches: (lbData.total ?? 0) * 3,
               activePlayers: lbData.total ?? 0,
               totalStaked: "Live",
             });
           }
+        } else {
+          if (mounted) setPlatformStats({ totalMatches: 0, activePlayers: 0, totalStaked: "—" });
         }
       } catch {
         if (mounted) setPlatformStats({ totalMatches: 0, activePlayers: 0, totalStaked: "—" });

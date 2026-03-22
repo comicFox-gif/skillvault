@@ -7,6 +7,7 @@ import { WagmiProvider } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { config } from "@/wagmi";
 import { ToastProvider } from "@/components/Toast";
+import { ActiveMatchProvider } from "@/components/ActiveMatchTracker";
 import NotificationCenter from "./notification-center";
 
 export default function Providers({ children }: { children: React.ReactNode }) {
@@ -16,8 +17,10 @@ export default function Providers({ children }: { children: React.ReactNode }) {
       <QueryClientProvider client={queryClient}>
         <RainbowKitProvider>
           <ToastProvider>
-            {children}
-            <NotificationCenter />
+            <ActiveMatchProvider>
+              {children}
+              <NotificationCenter />
+            </ActiveMatchProvider>
           </ToastProvider>
         </RainbowKitProvider>
       </QueryClientProvider>

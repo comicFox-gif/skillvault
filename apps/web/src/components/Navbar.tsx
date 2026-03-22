@@ -6,23 +6,50 @@ import { useEffect, useRef, useState } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { useAccount, useDisconnect } from "wagmi";
 import { loadWalletProfile } from "@/lib/profile";
+import { useActiveMatches } from "@/components/ActiveMatchTracker";
 
-const NAV_ITEMS = [
+const STATUS_LABELS: Record<number, string> = {
+  0: "Waiting",
+  1: "Joined",
+  2: "Funded",
+  3: "Result",
+  4: "Disputed",
+  5: "Resolved",
+  6: "Cancelled",
+};
+
+const STATUS_COLORS: Record<number, string> = {
+  0: "text-gray-400",
+  1: "text-sky-400",
+  2: "text-sky-400",
+  3: "text-amber-400",
+  4: "text-red-400",
+  5: "text-emerald-400",
+  6: "text-gray-500",
+};
+
+const NAV_ITEMS: readonly { href: string; label: string; icon: (props: { className?: string }) => React.JSX.Element; authOnly?: boolean }[] = [
   { href: "/", label: "Home", icon: HomeIcon },
   { href: "/matches", label: "Matches", icon: SwordsIcon },
   { href: "/tournaments", label: "Tourneys", icon: TrophyIcon },
   { href: "/leaderboards", label: "Rankings", icon: ChartIcon },
   { href: "/profile", label: "Profile", icon: UserIcon, authOnly: true },
-] as const;
+];
 
 export default function Navbar() {
   const pathname = usePathname();
   const { address, isConnected } = useAccount();
   const { disconnect } = useDisconnect();
+  const { activeMatches } = useActiveMatches();
   const [walletMenuOpen, setWalletMenuOpen] = useState(false);
+  const [activeMatchPanelOpen, setActiveMatchPanelOpen] = useState(false);
   const [walletUsername, setWalletUsername] = useState("");
   const walletMenuRef = useRef<HTMLDivElement | null>(null);
+  const activeMatchRef = useRef<HTMLDivElement | null>(null);
   const openConnectRef = useRef<(() => void) | null>(null);
+
+  // Filter to only in-progress matches (not resolved/cancelled)
+  const liveMatches = activeMatches.filter((m) => m.status < 5);
 
   useEffect(() => {
     let mounted = true;
@@ -45,13 +72,14 @@ export default function Navbar() {
 
   useEffect(() => {
     function onDocClick(event: globalThis.MouseEvent) {
-      if (!walletMenuRef.current) return;
-      if (walletMenuRef.current.contains(event.target as Node)) return;
+      if (walletMenuRef.current?.contains(event.target as Node)) return;
+      if (activeMatchRef.current?.contains(event.target as Node)) return;
       setWalletMenuOpen(false);
+      setActiveMatchPanelOpen(false);
     }
-    if (walletMenuOpen) document.addEventListener("mousedown", onDocClick);
+    if (walletMenuOpen || activeMatchPanelOpen) document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
-  }, [walletMenuOpen]);
+  }, [walletMenuOpen, activeMatchPanelOpen]);
 
   async function handleLinkWalletClick(openConnectModal: () => void) {
     try {
@@ -109,8 +137,97 @@ export default function Navbar() {
             })}
           </div>
 
-          {/* Wallet button */}
-          <div className="flex items-center gap-3">
+          {/* Right side: Active Match + Wallet */}
+          <div className="flex items-center gap-2">
+            {/* Active Match Button */}
+            {liveMatches.length > 0 && (
+              <div className="relative" ref={activeMatchRef}>
+                <button
+                  type="button"
+                  onClick={() => setActiveMatchPanelOpen((o) => !o)}
+                  className="relative flex items-center gap-2 rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-xs font-bold uppercase text-emerald-300 transition hover:bg-emerald-500/20"
+                >
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                  </span>
+                  <span className="hidden sm:inline">
+                    {liveMatches.length === 1 ? "Live Match" : `${liveMatches.length} Live`}
+                  </span>
+                  <span className="sm:hidden">Live</span>
+                  {liveMatches.length > 1 && (
+                    <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500/30 text-[9px] font-bold">
+                      {liveMatches.length}
+                    </span>
+                  )}
+                </button>
+
+                {activeMatchPanelOpen && (
+                  <div className="absolute right-0 mt-2 w-72 rounded-xl border border-white/10 bg-slate-900/95 p-2 shadow-[0_20px_50px_rgba(0,0,0,0.6)] backdrop-blur-xl z-50">
+                    <div className="px-3 pb-1.5 pt-1 text-[10px] uppercase tracking-[0.3em] text-gray-500">
+                      Active Matches
+                    </div>
+                    <div className="max-h-64 overflow-y-auto space-y-1">
+                      {liveMatches.map((match) => {
+                        const isCurrentRoom = pathname === `/matches/${match.roomCode}`;
+                        return (
+                          <Link
+                            key={match.roomCode}
+                            href={`/matches/${match.roomCode}`}
+                            onClick={() => setActiveMatchPanelOpen(false)}
+                            className={`block rounded-lg px-3 py-2.5 transition-colors ${
+                              isCurrentRoom
+                                ? "bg-sky-500/15 border border-sky-500/30"
+                                : "hover:bg-white/5"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-white">Room #{match.roomCode}</span>
+                              <span className={`text-[10px] font-bold uppercase tracking-wider ${STATUS_COLORS[match.status] ?? "text-gray-400"}`}>
+                                {STATUS_LABELS[match.status] ?? "Unknown"}
+                              </span>
+                            </div>
+                            <div className="mt-1 flex items-center gap-2 text-[10px] text-gray-500">
+                              {match.game && <span>{match.game}</span>}
+                              {match.stake && <span>{match.stake}</span>}
+                              <span className="capitalize">{match.role}</span>
+                            </div>
+                          </Link>
+                        );
+                      })}
+                    </div>
+                    {activeMatches.some((m) => m.status >= 5) && (
+                      <>
+                        <div className="mx-3 my-1.5 border-t border-white/5" />
+                        <div className="px-3 pb-1 text-[10px] uppercase tracking-[0.3em] text-gray-600">
+                          Completed
+                        </div>
+                        {activeMatches
+                          .filter((m) => m.status >= 5)
+                          .slice(0, 3)
+                          .map((match) => (
+                            <Link
+                              key={match.roomCode}
+                              href={`/matches/${match.roomCode}`}
+                              onClick={() => setActiveMatchPanelOpen(false)}
+                              className="block rounded-lg px-3 py-2 hover:bg-white/5 transition-colors opacity-60"
+                            >
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-gray-400">Room #{match.roomCode}</span>
+                                <span className={`text-[10px] font-bold uppercase tracking-wider ${STATUS_COLORS[match.status] ?? "text-gray-400"}`}>
+                                  {STATUS_LABELS[match.status] ?? "Done"}
+                                </span>
+                              </div>
+                            </Link>
+                          ))}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Wallet button */}
             {!isConnected ? (
               <ConnectButton.Custom>
                 {({ openConnectModal }) => {
@@ -207,6 +324,24 @@ export default function Navbar() {
               );
             })}
           </div>
+
+          {/* Mobile active match floating button */}
+          {liveMatches.length > 0 && !isMatchRoom && (
+            <div className="absolute -top-14 right-3">
+              <Link
+                href={`/matches/${liveMatches[0].roomCode}`}
+                className="flex items-center gap-2 rounded-full border border-emerald-500/50 bg-emerald-500/20 px-4 py-2.5 shadow-[0_8px_30px_rgba(16,185,129,0.3)] backdrop-blur-xl"
+              >
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
+                </span>
+                <span className="text-xs font-bold uppercase tracking-wider text-emerald-200">
+                  Return to Match
+                </span>
+              </Link>
+            </div>
+          )}
         </div>
       )}
     </>

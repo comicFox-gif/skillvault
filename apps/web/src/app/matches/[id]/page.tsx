@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, use, type ChangeEvent } from "react";
 import PageShell from "@/components/PageShell";
+import { useActiveMatches } from "@/components/ActiveMatchTracker";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { useAccount, useBalance, useChainId, usePublicClient, useReadContract, useSwitchChain, useWriteContract } from "wagmi";
 import { decodeEventLog, formatEther, parseEther, zeroAddress, type Address } from "viem";
@@ -450,6 +451,7 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
   const [disputeCooldownUntilMs, setDisputeCooldownUntilMs] = useState<number | null>(null);
   const [disputeCooldownNowMs, setDisputeCooldownNowMs] = useState(() => Date.now());
   const [activeTab, setActiveTab] = useState<"match" | "chat" | "evidence" | "history">("match");
+  const { trackMatch, updateMatchStatus } = useActiveMatches();
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const openConnectRef = useRef<(() => void) | null>(null);
   const autoJoinConnectPromptedRef = useRef(false);
@@ -651,6 +653,26 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
       : displayNameForWallet(proposedWinner)
     : "-";
   const matchPagePath = `/matches/${encodeURIComponent(roomCode)}`;
+
+  // Track this match as active so users can return from any page
+  useEffect(() => {
+    if (!hasValidRoomCode || typeof statusNum !== "number") return;
+    trackMatch({
+      roomCode,
+      matchId: matchId.toString(),
+      role: isCreator ? "creator" : isOpponent ? "opponent" : "spectator",
+      status: statusNum,
+      game: rematchGame,
+      opponent: isCreator ? opponentDisplayName : creatorDisplayName,
+      stake: `${stakeEth} ${nativeSymbol}`,
+    });
+  }, [roomCode, statusNum, isCreator, isOpponent]);
+
+  // Keep status synced as match progresses
+  useEffect(() => {
+    if (!hasValidRoomCode || typeof statusNum !== "number") return;
+    updateMatchStatus(roomCode, statusNum);
+  }, [statusNum]);
 
   async function dispatchMatchPushNotification(payload: {
     wallets: Array<string | undefined>;
@@ -2204,9 +2226,14 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
           </div>
         )}
 
-        {/* Tabs */}
+        {/* Tabs — chat & evidence only visible during/after dispute */}
         <div className="flex border-b border-white/10 mb-4">
-          {(["match", "chat", "evidence", "history"] as const).map(tab => (
+          {(["match", "chat", "evidence", "history"] as const)
+            .filter(tab => {
+              if (tab === "chat" || tab === "evidence") return statusNum === 4 || statusNum === 5;
+              return true;
+            })
+            .map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)}
               className={`px-4 py-2.5 text-xs font-bold uppercase tracking-wider transition-colors relative ${
                 activeTab === tab ? "text-sky-400" : "text-gray-500 hover:text-white"
