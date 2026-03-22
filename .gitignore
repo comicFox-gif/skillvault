@@ -20,3 +20,4 @@ apps/web/data/
 .DS_Store
 Thumbs.db
 .vscode/
+.claude/
