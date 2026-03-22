@@ -3156,20 +3156,34 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                 className="w-full rounded-2xl border border-sky-500/40 bg-sky-500/20 p-3 text-xs font-bold uppercase tracking-wider text-sky-100 transition hover:bg-sky-500/30"
                 onClick={copyMatchLinkValue}
               >
-                {copiedMatchLink ? "Link Copied!" : "Share Invite Link"}
+                <span className="inline-flex items-center justify-center gap-2">
+                  {copiedMatchLink ? (
+                    <svg className="h-4 w-4 animate-success-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+                  ) : (
+                    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" /><polyline points="16 6 12 2 8 6" /><line x1="12" y1="2" x2="12" y2="15" /></svg>
+                  )}
+                  {copiedMatchLink ? "Link Copied!" : "Share Invite Link"}
+                </span>
               </button>
             )}
             {statusNum === 0 && showOpponentJoin && (
               <button
-                className="w-full rounded-2xl border border-sky-500/40 bg-sky-500/20 p-3 font-bold uppercase tracking-wider text-sky-100 transition-all hover:bg-sky-500/30 disabled:opacity-20 disabled:cursor-not-allowed"
+                className="btn-ripple btn-press w-full rounded-2xl border border-sky-500/40 bg-sky-500/20 p-3 font-bold uppercase tracking-wider text-sky-100 transition-all hover:bg-sky-500/30 hover:shadow-[0_0_25px_rgba(56,189,248,0.15)] disabled:opacity-20 disabled:cursor-not-allowed"
                 onClick={handleJoinClick}
                 disabled={isJoinActionPending || isTxActionPending || !canShowJoinCTA}
               >
-                {isJoinActionPending
-                  ? "Processing..."
-                  : !isConnected
-                    ? `Connect + Lock Stake`
-                    : `Join + Lock Stake`}
+                <span className="inline-flex items-center justify-center gap-2">
+                  {isJoinActionPending ? (
+                    <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+                  ) : (
+                    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+                  )}
+                  {isJoinActionPending
+                    ? "Processing..."
+                    : !isConnected
+                      ? `Connect + Lock Stake`
+                      : `Join + Lock Stake`}
+                </span>
               </button>
             )}
             {(statusNum === 2 || (statusNum === 3 && !awaitingAcceptOrDispute && !hasSubmittedOutcome)) && canSelectOutcome && canDeclare && (
@@ -3178,24 +3192,30 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                   type="button"
                   onClick={submitWinClaim}
                   disabled={!canAct || !canDeclare || !address || txActionBusy}
-                  className="rounded-2xl border border-sky-500/60 bg-sky-500/20 p-3 text-xs font-bold uppercase tracking-wider text-sky-100 disabled:opacity-20"
+                  className="btn-ripple btn-press rounded-2xl border border-emerald-500/60 bg-emerald-500/20 p-3 text-xs font-bold uppercase tracking-wider text-emerald-100 transition-all hover:bg-emerald-500/30 hover:shadow-[0_0_20px_rgba(16,185,129,0.15)] disabled:opacity-20"
                 >
-                  I Won
+                  <span className="inline-flex items-center justify-center gap-2">
+                    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" /><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18" /><path d="M4 22h16" /><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" /><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" /><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" /></svg>
+                    I Won
+                  </span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowLoseConfirm(true)}
                   disabled={!canAct || !canDeclare || !opponentAddressForLoss || txActionBusy}
-                  className="rounded-2xl border border-red-500/40 bg-red-500/15 p-3 text-xs font-bold uppercase tracking-wider text-red-100 disabled:opacity-20"
+                  className="btn-ripple btn-press rounded-2xl border border-red-500/40 bg-red-500/15 p-3 text-xs font-bold uppercase tracking-wider text-red-100 transition-all hover:bg-red-500/25 disabled:opacity-20"
                 >
-                  I Lost
+                  <span className="inline-flex items-center justify-center gap-2">
+                    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M16 16s-1.5-2-4-2-4 2-4 2" /><line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" /></svg>
+                    I Lost
+                  </span>
                 </button>
               </div>
             )}
             {statusNum === 3 && awaitingAcceptOrDispute && normalizedProposedWinner && (
               <div className="grid grid-cols-2 gap-2">
                 <button
-                  className="rounded-2xl border border-emerald-500/40 bg-emerald-500/20 p-3 text-xs font-bold uppercase tracking-wider text-emerald-100 disabled:opacity-20"
+                  className="btn-ripple btn-press rounded-2xl border border-emerald-500/40 bg-emerald-500/20 p-3 text-xs font-bold uppercase tracking-wider text-emerald-100 transition-all hover:bg-emerald-500/30 hover:shadow-[0_0_20px_rgba(16,185,129,0.15)] disabled:opacity-20"
                   disabled={!canAct || txActionBusy}
                   onClick={() =>
                     runTx("Accept opponent result", () =>
@@ -3208,29 +3228,41 @@ export default function MatchDetailPage({ params }: { params: Promise<{ id: stri
                     )
                   }
                 >
-                  Confirm
+                  <span className="inline-flex items-center justify-center gap-2">
+                    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+                    Confirm
+                  </span>
                 </button>
                 <button
-                  className="rounded-2xl border border-red-500/40 bg-red-500/20 p-3 text-xs font-bold uppercase tracking-wider text-red-100 disabled:opacity-20"
+                  className="btn-ripple btn-press rounded-2xl border border-red-500/40 bg-red-500/20 p-3 text-xs font-bold uppercase tracking-wider text-red-100 transition-all hover:bg-red-500/30 disabled:opacity-20"
                   disabled={!canAct || disputeCooldownActive || isTxActionPending}
                   onClick={openDisputeConfirm}
                 >
-                  Dispute
+                  <span className="inline-flex items-center justify-center gap-2">
+                    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+                    Dispute
+                  </span>
                 </button>
               </div>
             )}
             {statusNum === 4 && isPlayer && (
               <button
                 type="button"
-                className="w-full rounded-2xl border border-amber-500/40 bg-amber-500/20 p-3 text-xs font-bold uppercase tracking-wider text-amber-100 transition hover:bg-amber-500/30"
+                className="btn-ripple btn-press w-full rounded-2xl border border-amber-500/40 bg-amber-500/20 p-3 text-xs font-bold uppercase tracking-wider text-amber-100 transition hover:bg-amber-500/30 hover:shadow-[0_0_20px_rgba(245,158,11,0.15)]"
                 onClick={() => setActiveTab("chat")}
               >
-                Open Chat
+                <span className="inline-flex items-center justify-center gap-2">
+                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+                  Open Chat
+                </span>
               </button>
             )}
             {statusNum === 5 && (
-              <div className="text-center text-xs font-bold uppercase tracking-wider text-emerald-300">
-                Resolved: {resolvedWinnerLabel}
+              <div className="text-center text-xs font-bold uppercase tracking-wider text-emerald-300 animate-fade-in-up">
+                <span className="inline-flex items-center justify-center gap-2">
+                  <svg className="h-4 w-4 animate-success-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+                  Resolved: {resolvedWinnerLabel}
+                </span>
               </div>
             )}
             {statusNum === 6 && (

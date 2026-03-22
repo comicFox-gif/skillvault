@@ -906,8 +906,8 @@ export default function CreateMatchPage() {
       <ConnectButton.Custom>
         {({ openConnectModal }) => (
           <button
-            className="mt-2 w-full rounded-2xl border border-sky-500/40 bg-sky-500/20 p-4 text-xs font-bold uppercase tracking-wider text-sky-100 transition-all hover:bg-sky-500/30 disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm"
-            onClick={() => {
+            className="btn-ripple btn-press mt-2 w-full rounded-2xl border border-sky-500/40 bg-sky-500/20 p-4 text-xs font-bold uppercase tracking-wider text-sky-100 transition-all hover:bg-sky-500/30 hover:shadow-[0_0_30px_rgba(56,189,248,0.15)] disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm"
+            onClick={(e) => {
               if (!isConnected) {
                 openConnectRef.current = openConnectModal;
                 openConnectModal();
@@ -917,16 +917,34 @@ export default function CreateMatchPage() {
             }}
             disabled={!chainReadyForCreate || creating || createStatus === "pending" || Boolean(txHash && !roomCode)}
           >
-            {creating ? "Creating Match..." : txHash && !roomCode ? "Finalizing..." : "Initialize Match"}
+            <span className="inline-flex items-center justify-center gap-2.5">
+              {creating || (txHash && !roomCode) ? (
+                <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              ) : (
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                </svg>
+              )}
+              {creating ? "Creating Match..." : txHash && !roomCode ? "Finalizing..." : "Initialize Match"}
+            </span>
           </button>
         )}
       </ConnectButton.Custom>
 
       {createStatus !== "idle" && (
-        <div className="rounded-2xl border border-sky-500/20 bg-sky-500/10 p-3 text-xs text-sky-200">
-          {createStatus === "signing"
-            ? "Waiting for wallet confirmation..."
-            : "Transaction sent, waiting for confirmation..."}
+        <div className="rounded-2xl border border-sky-500/20 bg-sky-500/10 p-3 text-xs text-sky-200 animate-fade-in-up">
+          <span className="inline-flex items-center gap-2">
+            <svg className="h-4 w-4 animate-spin-slow" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            {createStatus === "signing"
+              ? "Waiting for wallet confirmation..."
+              : "Transaction sent, waiting for confirmation..."}
+          </span>
         </div>
       )}
 
