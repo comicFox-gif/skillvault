@@ -7,6 +7,8 @@ import { useChainId, usePublicClient } from "wagmi";
 import { zeroAddress, type Address } from "viem";
 import { decodeMatchCode } from "@/lib/matchCode";
 import { getEscrowAddressForChain, getSupportedChainNames, isSupportedChainId } from "@/lib/chains";
+import PageShell from "@/components/PageShell";
+import GlassCard from "@/components/GlassCard";
 
 const escrowAbi = [
   {
@@ -88,77 +90,61 @@ export default function MatchesPage() {
   }
 
   return (
-    <main
-      className="relative min-h-screen w-full overflow-x-hidden bg-transparent text-white selection:bg-sky-500/30"
-    >
-      {/* Background FX */}
-      <div className="fixed inset-0 z-0 pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] h-[600px] w-[600px] rounded-full bg-sky-900/20 blur-[120px]" />
-        <div className="absolute bottom-[-10%] right-[-10%] h-[600px] w-[600px] rounded-full bg-slate-700/20 blur-[120px]" />
-        <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:50px_50px] [mask-image:radial-gradient(ellipse_80%_80%_at_50%_50%,#000_70%,transparent_100%)]" />
-      </div>
-
-      <div className="relative z-10 mx-auto max-w-4xl px-4 py-10 sm:px-6 sm:py-12">
-        <div className="mb-8 flex flex-col gap-4 border-b border-white/10 pb-6 sm:mb-12 sm:flex-row sm:items-center sm:justify-between">
+    <PageShell maxWidth="max-w-4xl">
+      <div className="animate-fade-in-up">
+        <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <h1 className="text-3xl font-black uppercase italic tracking-tighter text-white sm:text-4xl">
             Active <span className="text-transparent bg-clip-text bg-gradient-to-r from-sky-500 to-sky-200">Matches</span>
           </h1>
-          <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center">
-            <Link
-              className="group relative flex items-center justify-center overflow-hidden border border-white/10 bg-white/5 px-5 py-2 text-xs font-bold uppercase tracking-wider text-white transition-all hover:bg-white/10 sm:text-sm"
-              href="/"
-            >
-              Back
-            </Link>
-            <Link
-              className="group relative flex items-center justify-center overflow-hidden border border-sky-500/30 bg-sky-500/10 px-6 py-2 text-xs font-bold uppercase tracking-wider text-sky-400 transition-all hover:bg-sky-500/20 sm:text-sm"
-              href="/matches/create"
-            >
-              + Create Match
-            </Link>
-          </div>
+          <Link
+            className="inline-flex items-center justify-center overflow-hidden rounded-lg border border-sky-500/30 bg-sky-500/10 px-6 py-2.5 text-xs font-bold uppercase tracking-wider text-sky-400 transition-all hover:bg-sky-500/20 hover:scale-[1.02] active:scale-[0.98]"
+            href="/matches/create"
+          >
+            + Create Match
+          </Link>
         </div>
 
-        <div className="grid gap-8">
-          <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/10 via-white/5 to-transparent p-[1px] shadow-[0_20px_60px_rgba(0,0,0,0.55)]">
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_10%,rgba(56,189,248,0.18),transparent_45%),radial-gradient(circle_at_90%_90%,rgba(59,130,246,0.12),transparent_45%)]" />
-            <div className="relative rounded-[22px] bg-slate-900/90 p-5 backdrop-blur-xl sm:p-8">
-              <h3 className="mb-6 text-sm font-bold uppercase tracking-widest text-gray-500">Find Match by Room Code</h3>
-              
-              <div className="flex flex-col gap-4 sm:flex-row">
-                <input
-                  className="w-full border border-white/10 bg-black/50 p-4 text-base font-bold text-white placeholder-gray-700 outline-none transition-all focus:border-sky-500 sm:text-lg"
-                  placeholder="Enter Room Code (e.g. 100245)"
-                  value={id}
-                  onChange={(e) => setId(e.target.value.replace(/\D/g, ""))}
-                />
-                <button
-                  type="button"
-                  className="flex items-center justify-center bg-white px-8 py-3 text-xs font-bold uppercase tracking-wider text-black transition-colors hover:bg-gray-200 disabled:opacity-50 sm:py-0 sm:text-sm"
-                  onClick={() => void handleOpenMatch()}
-                  disabled={!id || openBusy}
-                >
-                  {openBusy ? "Checking..." : "Open"}
-                </button>
-              </div>
-              {openError && (
-                <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-300">
-                  {openError}
-                </div>
-              )}
+        <GlassCard glow hover={false}>
+          <h3 className="mb-5 text-sm font-bold uppercase tracking-widest text-gray-500">Find Match by Room Code</h3>
 
-              <div className="mt-8 flex items-start gap-3 border-t border-white/5 pt-6">
-                <div className="mt-1 h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-wider text-gray-400">System Status</p>
-                  <p className="mt-1 text-sm text-gray-600">
-                    Manual ID entry required. Indexer module offline.
-                  </p>
-                </div>
-              </div>
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <input
+              className="w-full rounded-lg border border-white/10 bg-black/50 p-4 text-base font-bold text-white placeholder-gray-700 outline-none transition-all focus:border-sky-500 sm:text-lg"
+              placeholder="Enter Room Code (e.g. 100245)"
+              value={id}
+              onChange={(e) => setId(e.target.value.replace(/\D/g, ""))}
+              onKeyDown={(e) => { if (e.key === "Enter") void handleOpenMatch(); }}
+            />
+            <button
+              type="button"
+              className="flex items-center justify-center rounded-lg bg-white px-8 py-3 text-xs font-bold uppercase tracking-wider text-black transition-all hover:bg-gray-200 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 sm:py-0 sm:text-sm"
+              onClick={() => void handleOpenMatch()}
+              disabled={!id || openBusy}
+            >
+              {openBusy ? (
+                <span className="flex items-center gap-2">
+                  <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+                  Checking...
+                </span>
+              ) : "Open"}
+            </button>
+          </div>
+          {openError && (
+            <div className="mt-3 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-300">
+              {openError}
+            </div>
+          )}
+
+          <div className="mt-6 flex items-start gap-3 border-t border-white/5 pt-5">
+            <div className="mt-1 h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-gray-400">System Status</p>
+              <p className="mt-1 text-sm text-gray-600">
+                Manual ID entry required. Indexer module offline.
+              </p>
             </div>
           </div>
-        </div>
+        </GlassCard>
       </div>
 
       {showRoomFull && (
@@ -167,7 +153,7 @@ export default function MatchesPage() {
           onClick={() => setShowRoomFull(false)}
         >
           <div
-            className="w-full max-w-md rounded-3xl border border-red-500/30 bg-slate-900/95 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl"
+            className="w-full max-w-md rounded-2xl border border-red-500/30 bg-slate-900/95 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="text-[11px] uppercase tracking-[0.35em] text-red-300/80">Room Full</div>
@@ -177,7 +163,7 @@ export default function MatchesPage() {
             </p>
             <button
               type="button"
-              className="mt-6 w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs font-bold uppercase tracking-wider text-white hover:bg-white/10"
+              className="mt-6 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-xs font-bold uppercase tracking-wider text-white hover:bg-white/10"
               onClick={() => setShowRoomFull(false)}
             >
               Close
@@ -185,11 +171,6 @@ export default function MatchesPage() {
           </div>
         </div>
       )}
-    </main>
+    </PageShell>
   );
 }
-
-
-
-
-

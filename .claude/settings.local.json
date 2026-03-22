@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(wc -l /c/Users/user/Desktop/skill-vault/apps/web/src/app/matches/[id]/page.tsx)",
+      "Bash(ls -la \"c:\\\\Users\\\\user\\\\Desktop\\\\skill-vault\\\\apps\\\\web\\\\src\\\\app\\\\admin\"\" 2>/dev/null || echo \"Admin directory not found \")",
+      "Bash(grep -E \"\\\\.\\(tsx|ts\\)$\")"
+    ]
+  }
+}

@@ -11,13 +11,13 @@ type ChainRuntimeConfig = {
   escrowAddress?: `0x${string}`;
 };
 
-function parseRpcUrls(csv: string | undefined, fallback: string) {
+function parseRpcUrls(csv: string | undefined, ...fallbacks: string[]) {
   const list = String(csv ?? "")
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
   if (list.length > 0) return Array.from(new Set(list));
-  return [fallback];
+  return fallbacks.length > 0 ? fallbacks : [];
 }
 
 const fallbackEscrowAddress = process.env.NEXT_PUBLIC_MATCH_ESCROW_ADDRESS as
@@ -34,6 +34,7 @@ const polkadot: ChainRuntimeConfig = {
   rpcUrls: parseRpcUrls(
     process.env.NEXT_PUBLIC_POLKADOT_RPC_URLS || process.env.NEXT_PUBLIC_POLKADOT_RPC_URL,
     "https://eth-rpc-testnet.polkadot.io/",
+    "https://westend-asset-hub-eth-rpc.polkadot.io",
   ),
   explorerUrl:
     process.env.NEXT_PUBLIC_POLKADOT_EXPLORER_URL ||
@@ -50,6 +51,8 @@ const moonbase: ChainRuntimeConfig = {
   rpcUrls: parseRpcUrls(
     process.env.NEXT_PUBLIC_MOONBASE_RPC_URLS || process.env.NEXT_PUBLIC_MOONBASE_RPC_URL,
     "https://rpc.api.moonbase.moonbeam.network",
+    "https://moonbase-alpha.public.blastapi.io",
+    "https://moonbeam-alpha.api.onfinality.io/public",
   ),
   explorerUrl: process.env.NEXT_PUBLIC_MOONBASE_EXPLORER_URL || "https://moonbase.moonscan.io",
   testnet: process.env.NEXT_PUBLIC_MOONBASE_CHAIN_TESTNET !== "false",
@@ -58,7 +61,48 @@ const moonbase: ChainRuntimeConfig = {
     | undefined,
 };
 
-export const supportedChainConfigs: ChainRuntimeConfig[] = [polkadot, moonbase];
+const baseSepolia: ChainRuntimeConfig = {
+  id: Number(process.env.NEXT_PUBLIC_BASE_SEPOLIA_CHAIN_ID || "84532"),
+  name: process.env.NEXT_PUBLIC_BASE_SEPOLIA_CHAIN_NAME || "Base Sepolia",
+  nativeName: process.env.NEXT_PUBLIC_BASE_SEPOLIA_NATIVE_NAME || "Ether",
+  nativeSymbol: process.env.NEXT_PUBLIC_BASE_SEPOLIA_NATIVE_SYMBOL || "ETH",
+  rpcUrls: parseRpcUrls(
+    process.env.NEXT_PUBLIC_BASE_SEPOLIA_RPC_URLS || process.env.NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL,
+    "https://sepolia.base.org",
+    "https://base-sepolia-rpc.publicnode.com",
+    "https://base-sepolia.blockpi.network/v1/rpc/public",
+  ),
+  explorerUrl: process.env.NEXT_PUBLIC_BASE_SEPOLIA_EXPLORER_URL || "https://sepolia.basescan.org",
+  testnet: process.env.NEXT_PUBLIC_BASE_SEPOLIA_CHAIN_TESTNET !== "false",
+  escrowAddress: process.env.NEXT_PUBLIC_BASE_SEPOLIA_MATCH_ESCROW_ADDRESS as
+    | `0x${string}`
+    | undefined,
+};
+
+const arbitrumSepolia: ChainRuntimeConfig = {
+  id: Number(process.env.NEXT_PUBLIC_ARB_SEPOLIA_CHAIN_ID || "421614"),
+  name: process.env.NEXT_PUBLIC_ARB_SEPOLIA_CHAIN_NAME || "Arbitrum Sepolia",
+  nativeName: process.env.NEXT_PUBLIC_ARB_SEPOLIA_NATIVE_NAME || "Ether",
+  nativeSymbol: process.env.NEXT_PUBLIC_ARB_SEPOLIA_NATIVE_SYMBOL || "ETH",
+  rpcUrls: parseRpcUrls(
+    process.env.NEXT_PUBLIC_ARB_SEPOLIA_RPC_URLS || process.env.NEXT_PUBLIC_ARB_SEPOLIA_RPC_URL,
+    "https://sepolia-rollup.arbitrum.io/rpc",
+    "https://arbitrum-sepolia-rpc.publicnode.com",
+    "https://arbitrum-sepolia.blockpi.network/v1/rpc/public",
+  ),
+  explorerUrl: process.env.NEXT_PUBLIC_ARB_SEPOLIA_EXPLORER_URL || "https://sepolia.arbiscan.io",
+  testnet: process.env.NEXT_PUBLIC_ARB_SEPOLIA_CHAIN_TESTNET !== "false",
+  escrowAddress: process.env.NEXT_PUBLIC_ARB_SEPOLIA_MATCH_ESCROW_ADDRESS as
+    | `0x${string}`
+    | undefined,
+};
+
+export const supportedChainConfigs: ChainRuntimeConfig[] = [
+  polkadot,
+  moonbase,
+  baseSepolia,
+  arbitrumSepolia,
+];
 
 export const supportedChains: Chain[] = supportedChainConfigs.map((config) => ({
   id: config.id,

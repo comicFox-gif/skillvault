@@ -290,6 +290,38 @@ export async function ensureDatabaseSchema() {
       CREATE INDEX IF NOT EXISTS tournament_matches_tournament_result_idx
       ON tournament_matches (tournament_id, result, updated_at)
     `;
+    await sql`
+      CREATE TABLE IF NOT EXISTS referrals (
+        id TEXT PRIMARY KEY,
+        referrer_wallet TEXT NOT NULL,
+        referred_wallet TEXT,
+        referral_code TEXT UNIQUE NOT NULL,
+        matches_created INTEGER NOT NULL DEFAULT 0,
+        matches_joined INTEGER NOT NULL DEFAULT 0,
+        created_at BIGINT NOT NULL,
+        claimed_at BIGINT
+      )
+    `;
+    await sql`
+      CREATE INDEX IF NOT EXISTS referrals_referrer_wallet_idx
+      ON referrals (referrer_wallet)
+    `;
+    await sql`
+      CREATE INDEX IF NOT EXISTS referrals_code_idx
+      ON referrals (referral_code)
+    `;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS rate_limit_entries (
+        bucket_key TEXT PRIMARY KEY,
+        count INTEGER NOT NULL,
+        reset_at BIGINT NOT NULL
+      )
+    `;
+    await sql`
+      CREATE INDEX IF NOT EXISTS rate_limit_entries_reset_idx
+      ON rate_limit_entries (reset_at)
+    `;
   })();
   await schemaInitPromise;
 }

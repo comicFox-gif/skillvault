@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
@@ -16,6 +15,8 @@ import {
   supportedChainConfigs,
 } from "@/lib/chains";
 import { showBrowserNotification } from "@/lib/notifications";
+import PageShell from "@/components/PageShell";
+import GlassCard from "@/components/GlassCard";
 
 const escrowAbi = [
   {
@@ -125,6 +126,57 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   });
 }
 
+const STEP_LABELS = ["Game & Platform", "Stake & Chain", "Settings"] as const;
+
+function StepIndicator({ current }: { current: number }) {
+  return (
+    <div className="flex items-center justify-center gap-0 mb-8">
+      {STEP_LABELS.map((label, i) => {
+        const stepNum = i + 1;
+        const completed = current > stepNum;
+        const active = current === stepNum;
+        return (
+          <div key={label} className="flex items-center">
+            {i > 0 && (
+              <div
+                className={`h-[2px] w-8 sm:w-14 transition-colors duration-300 ${
+                  current > stepNum ? "bg-sky-500" : current === stepNum ? "bg-sky-500/40" : "bg-white/10"
+                }`}
+              />
+            )}
+            <div className="flex flex-col items-center gap-1.5">
+              <div
+                className={`flex h-8 w-8 items-center justify-center rounded-full border-2 text-xs font-bold transition-all duration-300 ${
+                  completed
+                    ? "border-sky-500 bg-sky-500 text-white"
+                    : active
+                      ? "border-sky-500 bg-sky-500/20 text-sky-300"
+                      : "border-white/20 bg-white/5 text-gray-500"
+                }`}
+              >
+                {completed ? (
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : (
+                  stepNum
+                )}
+              </div>
+              <span
+                className={`text-[9px] sm:text-[10px] font-bold uppercase tracking-wider whitespace-nowrap ${
+                  active ? "text-sky-300" : completed ? "text-sky-400/70" : "text-gray-600"
+                }`}
+              >
+                {label}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function CreateMatchPage() {
   const router = useRouter();
   const { isConnected, address } = useAccount();
@@ -141,6 +193,8 @@ export default function CreateMatchPage() {
     return configured?.id ?? supportedChainConfigs[0]?.id ?? chainId;
   }, [chainId]);
   const chainReadyForCreate = Boolean(isSupportedChainId(chainId) && escrowAddress);
+
+  const [step, setStep] = useState(1);
 
   const [stakeEth, setStakeEth] = useState("0.01");
   const [opponentAddress, setOpponentAddress] = useState<Address>(
@@ -166,6 +220,7 @@ export default function CreateMatchPage() {
   const [finalizeStatusText, setFinalizeStatusText] = useState("");
   const [lastCheckAt, setLastCheckAt] = useState<number | null>(null);
   const [autoRematchRequested, setAutoRematchRequested] = useState(false);
+  const [minWinRate, setMinWinRate] = useState("");
   const [switchError, setSwitchError] = useState<string | null>(null);
   const openConnectRef = useRef<(() => void) | null>(null);
   const autoRematchConnectPromptedRef = useRef(false);
@@ -187,8 +242,9 @@ export default function CreateMatchPage() {
     const platformParam = encodeURIComponent(platform);
     const joinParam = encodeURIComponent(joinMins);
     const chainParam = encodeURIComponent(String(chainId));
-    return `/matches/${encodeURIComponent(expectedRoomCode)}?t=${timeParam}&g=${gameParam}&p=${platformParam}&j=${joinParam}&c=${chainParam}&pending=1`;
-  }, [expectedRoomCode, timeframe, game, platform, joinMins, chainId]);
+    const minWrParam = minWinRate && /^\d+$/.test(minWinRate) ? `&mwr=${encodeURIComponent(minWinRate)}` : "";
+    return `/matches/${encodeURIComponent(expectedRoomCode)}?t=${timeParam}&g=${gameParam}&p=${platformParam}&j=${joinParam}&c=${chainParam}&pending=1${minWrParam}`;
+  }, [expectedRoomCode, timeframe, game, platform, joinMins, chainId, minWinRate]);
   const txExplorerUrl = txHash ? `${explorerBaseUrl}/tx/${txHash}` : null;
 
   useEffect(() => {
@@ -203,7 +259,8 @@ export default function CreateMatchPage() {
     const platformParam = encodeURIComponent(platform);
     const joinParam = encodeURIComponent(joinMins);
     const chainParam = encodeURIComponent(String(chainId));
-    const target = `/matches/${encodeURIComponent(roomCode)}?t=${timeParam}&g=${gameParam}&p=${platformParam}&j=${joinParam}&c=${chainParam}&pending=1`;
+    const minWrParam = minWinRate && /^\d+$/.test(minWinRate) ? `&mwr=${encodeURIComponent(minWinRate)}` : "";
+    const target = `/matches/${encodeURIComponent(roomCode)}?t=${timeParam}&g=${gameParam}&p=${platformParam}&j=${joinParam}&c=${chainParam}&pending=1${minWrParam}`;
     const timeoutId = window.setTimeout(() => {
       router.push(target);
     }, 450);
@@ -671,332 +728,405 @@ export default function CreateMatchPage() {
     return null;
   }
 
-  return (
-    <main
-      className="relative min-h-screen w-full overflow-x-hidden bg-transparent text-white selection:bg-sky-500/30"
-    >
-      {/* Background FX */}
-      <div className="fixed inset-0 z-0 pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] h-[600px] w-[600px] rounded-full bg-sky-900/20 blur-[120px]" />
-        <div className="absolute bottom-[-10%] right-[-10%] h-[600px] w-[600px] rounded-full bg-slate-700/20 blur-[120px]" />
-        <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:50px_50px] [mask-image:radial-gradient(ellipse_80%_80%_at_50%_50%,#000_70%,transparent_100%)]" />
+  /* ─── wizard step content ─── */
+
+  const stepOneContent = (
+    <div className="grid gap-5">
+      <div>
+        <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">Game</label>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {(["eFootball", "FC26", "FC25", "Mortal Kombat"] as const).map((g) => (
+            <button
+              key={g}
+              type="button"
+              onClick={() => setGame(g)}
+              className={`rounded-2xl border px-3 py-2 text-xs font-bold uppercase tracking-wider transition ${
+                game === g
+                  ? "border-sky-500/60 bg-sky-500/15 text-sky-200"
+                  : "border-white/10 bg-black/40 text-gray-400 hover:text-white"
+              }`}
+            >
+              {g}
+            </button>
+          ))}
+        </div>
       </div>
 
-      <div className="relative z-10 mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10">
-        <div className="mb-8 flex flex-col gap-4 border-b border-white/10 pb-6 sm:flex-row sm:items-center sm:justify-between">
-          <h1 className="text-3xl font-black uppercase italic tracking-tighter text-white sm:text-4xl">
-            Create <span className="text-transparent bg-clip-text bg-gradient-to-r from-sky-500 to-sky-200">Match</span>
-          </h1>
-          <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center">
-            <Link
-              className="group relative flex items-center justify-center overflow-hidden border border-white/10 bg-white/5 px-5 py-2 text-xs font-bold uppercase tracking-wider text-white transition-all hover:bg-white/10 sm:text-sm"
-              href="/"
+      <div>
+        <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">Platform</label>
+        <div className="grid grid-cols-3 gap-2">
+          {(["Console", "PC", "Mobile"] as const).map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => setPlatform(p)}
+              className={`rounded-2xl border px-2 py-2 text-[10px] font-bold uppercase tracking-wider transition ${
+                platform === p
+                  ? "border-sky-500/60 bg-sky-500/15 text-sky-200"
+                  : "border-white/10 bg-black/40 text-gray-400 hover:text-white"
+              }`}
             >
-              Back
-            </Link>
-            <Link
-              className="group relative flex items-center justify-center overflow-hidden border border-sky-500/30 bg-sky-500/10 px-6 py-2 text-xs font-bold uppercase tracking-wider text-sky-400 transition-all hover:bg-sky-500/20 sm:text-sm"
-              href="/matches"
-            >
-              Matches
-            </Link>
+              {p}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  const stepTwoContent = (
+    <div className="grid gap-5">
+      <div>
+        <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">Stake ({nativeSymbol})</label>
+        <input
+          className="w-full border border-white/10 bg-black/50 p-4 text-lg font-bold text-white placeholder-gray-700 outline-none focus:border-sky-500 transition-all"
+          value={stakeEth}
+          onChange={(e) => setStakeEth(e.target.value)}
+          placeholder="0.01"
+        />
+        <p className="mt-2 text-[10px] uppercase tracking-widest text-gray-600">
+          Creator stake is locked immediately on creation.
+        </p>
+      </div>
+
+      {!chainReadyForCreate && (
+        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-100">
+          <div className="font-bold uppercase tracking-wider">Wrong network for match escrow.</div>
+          <div className="mt-1">Switch wallet to the required chain before creating a match.</div>
+          <button
+            type="button"
+            onClick={() => void handleSwitchNetwork()}
+            disabled={switchingChain}
+            className="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/20 px-4 py-2 text-xs font-bold uppercase tracking-wider text-amber-100 disabled:opacity-60"
+          >
+            {switchingChain ? "Switching..." : "Switch Network"}
+          </button>
+          {switchError ? <div className="mt-2 text-[11px] text-red-200">{switchError}</div> : null}
+        </div>
+      )}
+    </div>
+  );
+
+  const stepThreeContent = (
+    <div className="grid gap-5">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div>
+          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">Timeframe (mins)</label>
+          <select
+            className="w-full rounded-2xl border border-white/10 bg-black/50 px-4 py-3 text-sm text-white outline-none focus:border-sky-500"
+            value={timeframe}
+            onChange={(e) => setTimeframe(e.target.value)}
+          >
+            {Array.from({ length: 15 }, (_, i) => String(i + 6)).map((m) => (
+              <option key={m} value={m}>
+                {m} minutes
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">Join Deadline (Mins)</label>
+          <input
+            className="w-full border border-white/10 bg-black/50 p-4 text-white outline-none focus:border-sky-500"
+            value={joinMins}
+            onChange={(e) => setJoinMins(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div>
+          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">
+            Keeper Timeout (Mins)
+          </label>
+          <input
+            className="w-full border border-white/10 bg-black/50 p-4 text-white outline-none focus:border-sky-500"
+            value={confirmMins}
+            readOnly
+            disabled
+          />
+          <p className="mt-2 text-[10px] uppercase tracking-widest text-gray-600">
+            Auto-synced to match timeframe.
+          </p>
+        </div>
+        <div>
+          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">
+            Min Opponent Win Rate (optional)
+          </label>
+          <div className="flex items-center gap-3">
+            <input
+              className="w-full rounded-2xl border border-white/10 bg-black/50 px-4 py-3 text-sm text-white outline-none focus:border-sky-500"
+              type="number"
+              min="0"
+              max="100"
+              placeholder="e.g. 40"
+              value={minWinRate}
+              onChange={(e) => setMinWinRate(e.target.value)}
+            />
+            <span className="text-sm text-gray-400">%</span>
+          </div>
+          <p className="mt-2 text-[10px] uppercase tracking-widest text-gray-600">
+            Leave empty for no restriction. Opponents below this win rate cannot join.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+
+  const reviewContent = (
+    <div className="grid gap-4">
+      <div className="text-xs uppercase tracking-[0.3em] text-gray-500 mb-1">Review Your Match</div>
+      <div className="grid grid-cols-2 gap-3 text-sm">
+        <div className="rounded-xl border border-white/10 bg-black/40 px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-gray-500">Game</div>
+          <div className="font-bold text-white">{game}</div>
+        </div>
+        <div className="rounded-xl border border-white/10 bg-black/40 px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-gray-500">Platform</div>
+          <div className="font-bold text-white">{platform}</div>
+        </div>
+        <div className="rounded-xl border border-white/10 bg-black/40 px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-gray-500">Stake</div>
+          <div className="font-bold text-white">{stakeEth} {nativeSymbol}</div>
+        </div>
+        <div className="rounded-xl border border-white/10 bg-black/40 px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-gray-500">Timeframe</div>
+          <div className="font-bold text-white">{timeframe} min</div>
+        </div>
+        <div className="rounded-xl border border-white/10 bg-black/40 px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-gray-500">Join Deadline</div>
+          <div className="font-bold text-white">{joinMins} min</div>
+        </div>
+        <div className="rounded-xl border border-white/10 bg-black/40 px-3 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-gray-500">Min Win Rate</div>
+          <div className="font-bold text-white">{minWinRate ? `${minWinRate}%` : "None"}</div>
+        </div>
+      </div>
+
+      <ConnectButton.Custom>
+        {({ openConnectModal }) => (
+          <button
+            className="mt-2 w-full rounded-2xl border border-sky-500/40 bg-sky-500/20 p-4 text-xs font-bold uppercase tracking-wider text-sky-100 transition-all hover:bg-sky-500/30 disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm"
+            onClick={() => {
+              if (!isConnected) {
+                openConnectRef.current = openConnectModal;
+                openConnectModal();
+                return;
+              }
+              void onCreate();
+            }}
+            disabled={!chainReadyForCreate || creating || createStatus === "pending" || Boolean(txHash && !roomCode)}
+          >
+            {creating ? "Creating Match..." : txHash && !roomCode ? "Finalizing..." : "Initialize Match"}
+          </button>
+        )}
+      </ConnectButton.Custom>
+
+      {createStatus !== "idle" && (
+        <div className="rounded-2xl border border-sky-500/20 bg-sky-500/10 p-3 text-xs text-sky-200">
+          {createStatus === "signing"
+            ? "Waiting for wallet confirmation..."
+            : "Transaction sent, waiting for confirmation..."}
+        </div>
+      )}
+
+      {error && (
+        <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400 font-mono break-all">
+          {error}
+        </div>
+      )}
+    </div>
+  );
+
+  const sidebarContent = (
+    <aside>
+      <div className="rounded-2xl border border-white/10 bg-black/50 p-4 text-xs text-gray-300">
+        <div className="text-[10px] uppercase tracking-[0.35em] text-gray-500 mb-3">Match Rules & Safety</div>
+        <div className="space-y-3">
+          <div>
+            <div className="uppercase tracking-wider text-sky-400 text-[11px]">{game} rules</div>
+            {game === "Mortal Kombat" ? (
+              <ul className="mt-2 list-disc pl-4 space-y-1 text-gray-400">
+                <li>First to 3 wins (FT3), standard tournament settings.</li>
+                <li>No custom modifiers, no consumables, no pause abuse.</li>
+                <li>Disconnects before one round: replay; after a full round: opponent may claim win.</li>
+                <li>Record final screen for dispute evidence.</li>
+              </ul>
+            ) : (
+              <ul className="mt-2 list-disc pl-4 space-y-1 text-gray-400">
+                <li>Standard 1v1 match, default competitive settings.</li>
+                <li>No custom gameplay modifiers or assisted exploits.</li>
+                <li>Disconnect before halftime: replay; after halftime: opponent may claim win.</li>
+                <li>Record final score screen for disputes.</li>
+              </ul>
+            )}
+          </div>
+          <div>
+            <div className="uppercase tracking-wider text-sky-400 text-[11px]">Fair play</div>
+            <ul className="mt-2 list-disc pl-4 space-y-1 text-gray-400">
+              <li>Respectful conduct; no harassment or cheating tools.</li>
+              <li>Platform: {platform}. Timeframe: {timeframe} minutes.</li>
+            </ul>
+          </div>
+          <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-[11px] text-red-300">
+            Gambling Warning: This is a skill-based competition platform. Do not wager more than you can afford to lose.
+            If you feel at risk of gambling addiction, please seek help in your region.
           </div>
         </div>
+      </div>
+    </aside>
+  );
 
-        <ConnectButton.Custom>
-          {({ openConnectModal }) => {
-            openConnectRef.current = openConnectModal;
-            return null;
-          }}
-        </ConnectButton.Custom>
+  return (
+    <PageShell maxWidth="max-w-6xl">
+      <ConnectButton.Custom>
+        {({ openConnectModal }) => {
+          openConnectRef.current = openConnectModal;
+          return null;
+        }}
+      </ConnectButton.Custom>
 
-        {!chainReadyForCreate && (
-          <div className="mb-6 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-100">
-            <div className="font-bold uppercase tracking-wider">Wrong network for match escrow.</div>
-            <div className="mt-1">Switch wallet to the required chain before creating a match.</div>
-            <button
-              type="button"
-              onClick={() => void handleSwitchNetwork()}
-              disabled={switchingChain}
-              className="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/20 px-4 py-2 text-xs font-bold uppercase tracking-wider text-amber-100 disabled:opacity-60"
-            >
-              {switchingChain ? "Switching..." : "Switch Network"}
-            </button>
-            {switchError ? <div className="mt-2 text-[11px] text-red-200">{switchError}</div> : null}
-          </div>
-        )}
+      <div className="mb-8 flex flex-col gap-4 border-b border-white/10 pb-6 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="text-3xl font-black uppercase italic tracking-tighter text-white sm:text-4xl">
+          Create <span className="text-transparent bg-clip-text bg-gradient-to-r from-sky-500 to-sky-200">Match</span>
+        </h1>
+      </div>
 
-        <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/10 via-white/5 to-transparent p-[1px] shadow-[0_20px_60px_rgba(0,0,0,0.55)]">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_10%,rgba(56,189,248,0.18),transparent_45%),radial-gradient(circle_at_90%_90%,rgba(59,130,246,0.12),transparent_45%)]" />
-          <div className="relative rounded-[22px] bg-slate-900/90 p-5 backdrop-blur-xl sm:p-6 lg:p-7">
-            <div className="grid gap-6 lg:grid-cols-5 lg:items-start">
-              <div className="grid gap-5 lg:col-span-3 lg:pr-2">
-              <div>
-                <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">Stake ({nativeSymbol})</label>
-                <input
-                  className="w-full border border-white/10 bg-black/50 p-4 text-lg font-bold text-white placeholder-gray-700 outline-none focus:border-sky-500 transition-all"
-                  value={stakeEth}
-                  onChange={(e) => setStakeEth(e.target.value)}
-                  placeholder="0.01"
-                />
-                <p className="mt-2 text-[10px] uppercase tracking-widest text-gray-600">
-                  Creator stake is locked immediately on creation.
-                </p>
-              </div>
+      <div className="grid gap-6 lg:grid-cols-5 lg:items-start">
+        <div className="lg:col-span-3 lg:pr-2">
+          <GlassCard glow hover={false}>
+            <StepIndicator current={step} />
 
-              <div>
-                <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">Game</label>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {(["eFootball", "FC26", "FC25", "Mortal Kombat"] as const).map((g) => (
-                    <button
-                      key={g}
-                      type="button"
-                      onClick={() => setGame(g)}
-                      className={`rounded-2xl border px-3 py-2 text-xs font-bold uppercase tracking-wider transition ${
-                        game === g
-                          ? "border-sky-500/60 bg-sky-500/15 text-sky-200"
-                          : "border-white/10 bg-black/40 text-gray-400 hover:text-white"
-                      }`}
-                    >
-                      {g}
-                    </button>
-                  ))}
-                </div>
-              </div>
+            {step === 1 && stepOneContent}
+            {step === 2 && stepTwoContent}
+            {step === 3 && stepThreeContent}
+            {step === 4 && reviewContent}
 
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                  <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">Platform</label>
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                    {(["Console", "PC", "Mobile"] as const).map((p) => (
-                      <button
-                        key={p}
-                        type="button"
-                        onClick={() => setPlatform(p)}
-                        className={`rounded-2xl border px-2 py-2 text-[10px] font-bold uppercase tracking-wider transition ${
-                          platform === p
-                            ? "border-sky-500/60 bg-sky-500/15 text-sky-200"
-                            : "border-white/10 bg-black/40 text-gray-400 hover:text-white"
-                        }`}
-                      >
-                        {p}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">Timeframe (mins)</label>
-                  <select
-                    className="w-full rounded-2xl border border-white/10 bg-black/50 px-4 py-3 text-sm text-white outline-none focus:border-sky-500"
-                    value={timeframe}
-                    onChange={(e) => setTimeframe(e.target.value)}
-                  >
-                    {Array.from({ length: 15 }, (_, i) => String(i + 6)).map((m) => (
-                      <option key={m} value={m}>
-                        {m} minutes
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                  <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">Join Deadline (Mins)</label>
-                  <input
-                    className="w-full border border-white/10 bg-black/50 p-4 text-white outline-none focus:border-sky-500"
-                    value={joinMins}
-                    onChange={(e) => setJoinMins(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-500">
-                    Keeper Timeout (Mins)
-                  </label>
-                  <input
-                    className="w-full border border-white/10 bg-black/50 p-4 text-white outline-none focus:border-sky-500"
-                    value={confirmMins}
-                    readOnly
-                    disabled
-                  />
-                  <p className="mt-2 text-[10px] uppercase tracking-widest text-gray-600">
-                    Auto-synced to match timeframe.
-                  </p>
-                </div>
-              </div>
-
-              <ConnectButton.Custom>
-                {({ openConnectModal }) => (
-                  <button
-                    className="mt-2 w-full rounded-2xl border border-sky-500/40 bg-sky-500/20 p-4 text-xs font-bold uppercase tracking-wider text-sky-100 transition-all hover:bg-sky-500/30 disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm"
-                    onClick={() => {
-                      if (!isConnected) {
-                        openConnectRef.current = openConnectModal;
-                        openConnectModal();
-                        return;
-                      }
-                      void onCreate();
-                    }}
-                    disabled={!chainReadyForCreate || creating || createStatus === "pending" || Boolean(txHash && !roomCode)}
-                  >
-                    {creating ? "Creating Match..." : txHash && !roomCode ? "Finalizing..." : "Initialize Match"}
-                  </button>
-                )}
-              </ConnectButton.Custom>
-              {createStatus !== "idle" && (
-                <div className="rounded-2xl border border-sky-500/20 bg-sky-500/10 p-3 text-xs text-sky-200">
-                  {createStatus === "signing"
-                    ? "Waiting for wallet confirmation..."
-                    : "Transaction sent, waiting for confirmation..."}
-                </div>
+            {/* Navigation buttons */}
+            <div className="mt-6 flex items-center justify-between gap-3">
+              {step > 1 ? (
+                <button
+                  type="button"
+                  onClick={() => setStep((s) => s - 1)}
+                  className="rounded-2xl border border-white/10 bg-white/5 px-5 py-2.5 text-xs font-bold uppercase tracking-wider text-white transition-all hover:bg-white/10"
+                >
+                  Back
+                </button>
+              ) : (
+                <div />
               )}
-
-              {error && (
-                <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400 font-mono break-all">
-                  {error}
-                </div>
+              {step < 4 && (
+                <button
+                  type="button"
+                  onClick={() => setStep((s) => s + 1)}
+                  className="rounded-2xl border border-sky-500/40 bg-sky-500/20 px-6 py-2.5 text-xs font-bold uppercase tracking-wider text-sky-100 transition-all hover:bg-sky-500/30"
+                >
+                  Next
+                </button>
               )}
-              </div>
+            </div>
+          </GlassCard>
+        </div>
 
-              <aside className="lg:col-span-2 lg:pl-1">
-                <div className="rounded-2xl border border-white/10 bg-black/50 p-4 text-xs text-gray-300">
-                  <div className="text-[10px] uppercase tracking-[0.35em] text-gray-500 mb-3">Match Rules & Safety</div>
-                  <div className="space-y-3">
-                    <div>
-                      <div className="uppercase tracking-wider text-sky-400 text-[11px]">{game} rules</div>
-                      {game === "Mortal Kombat" ? (
-                        <ul className="mt-2 list-disc pl-4 space-y-1 text-gray-400">
-                          <li>First to 3 wins (FT3), standard tournament settings.</li>
-                          <li>No custom modifiers, no consumables, no pause abuse.</li>
-                          <li>Disconnects before one round: replay; after a full round: opponent may claim win.</li>
-                          <li>Record final screen for dispute evidence.</li>
-                        </ul>
-                      ) : (
-                        <ul className="mt-2 list-disc pl-4 space-y-1 text-gray-400">
-                          <li>Standard 1v1 match, default competitive settings.</li>
-                          <li>No custom gameplay modifiers or assisted exploits.</li>
-                          <li>Disconnect before halftime: replay; after halftime: opponent may claim win.</li>
-                          <li>Record final score screen for disputes.</li>
-                        </ul>
-                      )}
-                    </div>
-                    <div>
-                      <div className="uppercase tracking-wider text-sky-400 text-[11px]">Fair play</div>
-                      <ul className="mt-2 list-disc pl-4 space-y-1 text-gray-400">
-                        <li>Respectful conduct; no harassment or cheating tools.</li>
-                        <li>Platform: {platform}. Timeframe: {timeframe} minutes.</li>
-                      </ul>
-                    </div>
-                    <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-[11px] text-red-300">
-                      Gambling Warning: This is a skill-based competition platform. Do not wager more than you can afford to lose.
-                      If you feel at risk of gambling addiction, please seek help in your region.
-                    </div>
-                  </div>
+        <div className="lg:col-span-2 lg:pl-1">
+          {sidebarContent}
+        </div>
+      </div>
+
+      {/* Finalizing modal */}
+      {!roomCode && txHash && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 sm:p-6">
+          <div className="relative w-full max-w-md overflow-hidden rounded-3xl border border-sky-500/30 bg-slate-900/95 p-5 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl sm:p-6">
+            <div className="mb-4 text-xs uppercase tracking-[0.35em] text-sky-400/80">Match Created</div>
+            <h3 className="text-2xl font-semibold text-white">Finalizing match...</h3>
+              <p className="mt-2 text-sm text-gray-400">
+                We sent the transaction. Waiting for confirmation to fetch your room code.
+              </p>
+              {finalizeStatusText ? (
+                <div className="mt-3 rounded-xl border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-xs text-sky-100">
+                  {finalizeStatusText}
                 </div>
-              </aside>
+              ) : null}
+
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+              {txHash && (
+                <button
+                  className="flex-1 rounded-2xl border border-sky-500/40 bg-sky-500/10 px-4 py-3 text-xs font-bold uppercase tracking-wider text-sky-200"
+                  onClick={() =>
+                    void resolveMatchId(
+                      txHash as `0x${string}`,
+                      expectedMatchId,
+                      pendingStakeWei,
+                      pendingOpponent,
+                    )
+                  }
+                  disabled={checkingReceipt}
+                >
+                  {checkingReceipt ? "Checking..." : "Check Again"}
+                </button>
+              )}
+              <button
+                className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs font-bold uppercase tracking-wider text-white"
+                onClick={() => {
+                  setMatchId(null);
+                  setTxHash(null);
+                  setExpectedMatchId(null);
+                  setPendingStakeWei(null);
+                  setPendingOpponent(null);
+                  setCreateStatus("idle");
+                  setCheckingReceipt(false);
+                  setFinalizeStatusText("");
+                  setLastCheckAt(null);
+                  createActionLockRef.current = false;
+                }}
+              >
+                Close
+              </button>
             </div>
 
-            {!roomCode && txHash && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 sm:p-6">
-                <div className="relative w-full max-w-md overflow-hidden rounded-3xl border border-sky-500/30 bg-slate-900/95 p-5 shadow-[0_30px_80px_rgba(0,0,0,0.75)] backdrop-blur-xl sm:p-6">
-                  <div className="mb-4 text-xs uppercase tracking-[0.35em] text-sky-400/80">Match Created</div>
-                  <h3 className="text-2xl font-semibold text-white">Finalizing match...</h3>
-                    <p className="mt-2 text-sm text-gray-400">
-                      We sent the transaction. Waiting for confirmation to fetch your room code.
-                    </p>
-                    {finalizeStatusText ? (
-                      <div className="mt-3 rounded-xl border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-xs text-sky-100">
-                        {finalizeStatusText}
-                      </div>
-                    ) : null}
-
-                  <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-                    {txHash && (
-                      <button
-                        className="flex-1 rounded-2xl border border-sky-500/40 bg-sky-500/10 px-4 py-3 text-xs font-bold uppercase tracking-wider text-sky-200"
-                        onClick={() =>
-                          void resolveMatchId(
-                            txHash as `0x${string}`,
-                            expectedMatchId,
-                            pendingStakeWei,
-                            pendingOpponent,
-                          )
-                        }
-                        disabled={checkingReceipt}
-                      >
-                        {checkingReceipt ? "Checking..." : "Check Again"}
-                      </button>
-                    )}
-                    <button
-                      className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-xs font-bold uppercase tracking-wider text-white"
-                      onClick={() => {
-                        setMatchId(null);
-                        setTxHash(null);
-                        setExpectedMatchId(null);
-                        setPendingStakeWei(null);
-                        setPendingOpponent(null);
-                        setCreateStatus("idle");
-                        setCheckingReceipt(false);
-                        setFinalizeStatusText("");
-                        setLastCheckAt(null);
-                        createActionLockRef.current = false;
-                      }}
-                    >
-                      Close
-                    </button>
-                  </div>
-
-                  {txHash && (
-                    <div className="mt-4 space-y-2">
-                      <div className="text-[10px] uppercase tracking-[0.3em] text-gray-500">
-                        Transaction submitted
-                      </div>
-                      {txExplorerUrl && (
-                        <a
-                          href={txExplorerUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-block rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-sky-200 hover:bg-sky-500/20"
-                        >
-                          Open In Explorer
-                        </a>
-                      )}
-                      {expectedRoomCode && (
-                        <button
-                          type="button"
-                          className="ml-2 rounded-xl border border-white/10 bg-white/5 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-white hover:bg-white/10"
-                          onClick={() => {
-                            if (!provisionalTarget) return;
-                            router.push(provisionalTarget);
-                          }}
-                        >
-                          Open Provisional Room
-                        </button>
-                      )}
-                      <div className="text-[11px] text-amber-200/90">
-                        If pending for too long, use MetaMask Speed Up or Cancel, then retry.
-                      </div>
-                      <div className="text-[10px] text-gray-400">
-                        Auto-check attempts: {Math.min(autoRechecks, AUTO_RECHECK_MAX)}/{AUTO_RECHECK_MAX}
-                      </div>
-                      {lastCheckAt ? (
-                        <div className="text-[10px] text-gray-500">
-                          Last checked: {new Date(lastCheckAt).toLocaleTimeString()}
-                        </div>
-                      ) : null}
-                    </div>
-                  )}
+            {txHash && (
+              <div className="mt-4 space-y-2">
+                <div className="text-[10px] uppercase tracking-[0.3em] text-gray-500">
+                  Transaction submitted
                 </div>
+                {txExplorerUrl && (
+                  <a
+                    href={txExplorerUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-block rounded-xl border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-sky-200 hover:bg-sky-500/20"
+                  >
+                    Open In Explorer
+                  </a>
+                )}
+                {expectedRoomCode && (
+                  <button
+                    type="button"
+                    className="ml-2 rounded-xl border border-white/10 bg-white/5 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-white hover:bg-white/10"
+                    onClick={() => {
+                      if (!provisionalTarget) return;
+                      router.push(provisionalTarget);
+                    }}
+                  >
+                    Open Provisional Room
+                  </button>
+                )}
+                <div className="text-[11px] text-amber-200/90">
+                  If pending for too long, use MetaMask Speed Up or Cancel, then retry.
+                </div>
+                <div className="text-[10px] text-gray-400">
+                  Auto-check attempts: {Math.min(autoRechecks, AUTO_RECHECK_MAX)}/{AUTO_RECHECK_MAX}
+                </div>
+                {lastCheckAt ? (
+                  <div className="text-[10px] text-gray-500">
+                    Last checked: {new Date(lastCheckAt).toLocaleTimeString()}
+                  </div>
+                ) : null}
               </div>
             )}
           </div>
         </div>
-      </div>
-    </main>
+      )}
+    </PageShell>
   );
 }
-
-
-
-
-

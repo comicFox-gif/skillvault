@@ -23,10 +23,10 @@ type ReputationPayload = {
     {
       wins: number;
       losses: number;
-      resolved: number;
+      resolved?: number;
       disputes: number;
-      noResponseFlags: number;
-      entries: Array<{ matchId: string; opponent: string; result: "Win" | "Loss" | "Pending" | "Disputed" }>;
+      noResponseFlags?: number;
+      entries: Array<{ matchId: string; opponent: string; result: "Win" | "Loss" | "Disputed" }>;
     }
   >;
 };
@@ -35,10 +35,10 @@ export type ReputationSnapshot = {
   wallet: string;
   wins: number;
   losses: number;
-  resolved: number;
+  resolved?: number;
   disputes: number;
-  noResponseFlags: number;
-  entries: Array<{ matchId: string; opponent: string; result: "Win" | "Loss" | "Pending" | "Disputed" }>;
+  noResponseFlags?: number;
+  entries: Array<{ matchId: string; opponent: string; result: "Win" | "Loss" | "Disputed" }>;
   updatedAt: number;
 };
 
@@ -62,11 +62,11 @@ function toEpoch(value: unknown) {
   return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
-function normalizeResult(value: unknown): "Win" | "Loss" | "Pending" | "Disputed" {
-  if (value === "Win" || value === "Loss" || value === "Pending" || value === "Disputed") {
-    return value;
-  }
-  return "Pending";
+function normalizeResult(value: unknown): "Win" | "Loss" | "Disputed" {
+  if (value === "Win") return "Win";
+  if (value === "Loss") return "Loss";
+  if (value === "Disputed") return "Disputed";
+  return "Loss";
 }
 
 function hasSocialHandleContent(message: string) {
